@@ -1,34 +1,15 @@
 #!/usr/bin/env python3
-"""
-Project Nemesis — a safe, educational network-security dashboard
-I created this project for the software project course at Karaj Azad University.
-
-Run the script with root privileges for attack modules to work.
-"""
-
 import os
 import sys
 import subprocess
 import logging
-from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
 
-# ---------------------------------------------------------------------------
-# Version & Log
-# ---------------------------------------------------------------------------
 VERSION = "3.0.0"
 LOG_FILE = Path.home() / ".nemesis.log"
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
+                    format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
-# ---------------------------------------------------------------------------
-# Paths & Tool Verification
-# ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 PIG_SCRIPT = SCRIPT_DIR / "DHCP" / "pig.py"
 DNSFORGE_MODULE = "DNS"
@@ -37,7 +18,6 @@ if not PIG_SCRIPT.is_file():
     sys.exit(f"ERROR: {PIG_SCRIPT} not found.\n"
              "Make sure pig.py is inside the DHCP folder next to this script.")
 
-# Add script directory to sys.path so we can import local modules
 sys.path.insert(0, str(SCRIPT_DIR))
 try:
     __import__(DNSFORGE_MODULE)
@@ -45,9 +25,6 @@ except ImportError:
     sys.exit(f"ERROR: {DNSFORGE_MODULE} module not found in {SCRIPT_DIR}\n"
              "Make sure dnsforge.py is inside the DNS folder.")
 
-# ---------------------------------------------------------------------------
-# Colors (ANSI escape codes)
-# ---------------------------------------------------------------------------
 class Colors:
     RED = "\033[1;31m"
     MUTED = "\033[0;31m"
@@ -56,8 +33,6 @@ class Colors:
     GREEN = "\033[1;32m"
     BOLD = "\033[1m"
     RESET = "\033[0m"
-
-    # Box drawing characters (fallback to ASCII if needed)
     HLINE = "─"
     VLINE = "│"
     TOPL = "┌"
@@ -65,9 +40,8 @@ class Colors:
     BOTL = "└"
     BOTR = "┘"
 
-# Disable colors if stdout is not a terminal
 if not sys.stdout.isatty():
-    for attr in vars(Colors):
+    for attr in dir(Colors):
         if not attr.startswith("_") and isinstance(getattr(Colors, attr), str):
             setattr(Colors, attr, "")
     Colors.HLINE = "-"
@@ -77,15 +51,10 @@ if not sys.stdout.isatty():
     Colors.BOTL = "+"
     Colors.BOTR = "+"
 
-# ---------------------------------------------------------------------------
-# Helper Utilities
-# ---------------------------------------------------------------------------
-def clear_screen() -> None:
-    """Clear the terminal screen."""
+def clear_screen():
     os.system("clear" if os.name != "nt" else "cls")
 
-def banner(text: str) -> None:
-    """Draw a centered banner with a box around the given text."""
+def banner(text):
     width = 60
     print(f"{Colors.RED}{Colors.TOPL}{Colors.HLINE * (width - 2)}{Colors.TOPR}")
     pad = (width - 2 - len(text)) // 2
@@ -93,8 +62,7 @@ def banner(text: str) -> None:
           f"{' ' * (width - 2 - len(text) - pad)}{Colors.VLINE}")
     print(f"{Colors.BOTL}{Colors.HLINE * (width - 2)}{Colors.BOTR}{Colors.RESET}")
 
-def logo() -> None:
-    """Display the Nemesis logo."""
+def logo():
     clear_screen()
     print(f"""{Colors.RED}
 ███╗   ██╗███████╗███╗   ███╗███████╗███████╗██╗███████╗
@@ -104,34 +72,26 @@ def logo() -> None:
 ██║ ╚████║███████╗██║ ╚═╝ ██║███████╗███████║██║███████║
 ╚═╝  ╚═══╝╚══════╝╚═╝     ╚═╝╚══════╝╚══════╝╚═╝╚══════╝
 {Colors.RESET}""")
-    print(f"{Colors.MUTED}               Windows Services Security Pentest Project{Colors.RESET}")
-    print()
+    print(f"{Colors.MUTED}               Windows Services Security Pentest Project{Colors.RESET}\n")
 
-def pause() -> None:
-    """Wait for the user to press Enter."""
+def pause():
     input(f"\n{Colors.MUTED}Press Enter to return...{Colors.RESET}")
 
-def log_access(module: str) -> None:
-    """Log module access to the log file."""
+def log_access(module):
     logging.info(module)
 
-def confirm_attack(attack_desc: str) -> bool:
-    """Ask the user to confirm an attack before execution."""
+def confirm_attack(attack_desc):
     print(f"\n{Colors.RED}You are about to run:{Colors.RESET}")
     print(f"  {Colors.BOLD}{attack_desc}{Colors.RESET}")
     print(f"{Colors.RED}This requires root and must ONLY be done on authorised networks.{Colors.RESET}")
     answer = input(f"{Colors.CYAN}Type 'yes' to confirm: {Colors.RESET}").strip().lower()
     return answer in ("y", "yes", "yep", "yeah")
 
-# ---------------------------------------------------------------------------
-# Interface Manager (remembers the last used interface)
-# ---------------------------------------------------------------------------
 class InterfaceManager:
-    def __init__(self) -> None:
-        self._saved_iface: Optional[str] = None
+    def __init__(self):
+        self._saved_iface = None
 
-    def get_interface(self) -> Optional[str]:
-        """Ask the user for a network interface, reusing the saved one if possible."""
+    def get_interface(self):
         if self._saved_iface:
             use = input(f"{Colors.CYAN}Use saved interface {Colors.BOLD}{self._saved_iface}"
                         f"{Colors.RESET}{Colors.CYAN}? [Y/n]: {Colors.RESET}").strip().lower()
@@ -145,23 +105,17 @@ class InterfaceManager:
 
 iface_mgr = InterfaceManager()
 
-# ---------------------------------------------------------------------------
-# Base Attack Runner
-# ---------------------------------------------------------------------------
-def run_command(cmd: List[str], attack_type: str) -> None:
-    """Display and execute an attack command after user confirmation."""
+def run_command(cmd, attack_type):
     desc = " ".join(cmd)
     clear_screen()
     logo()
     banner(f"Execute {attack_type} Attack")
     print(f"\n{Colors.YELLOW}Command:{Colors.RESET}\n  {desc}")
     print(f"{Colors.GREEN}{'━' * 50}{Colors.RESET}")
-
     if not confirm_attack(desc):
         print(f"{Colors.MUTED}Attack cancelled.{Colors.RESET}")
         pause()
         return
-
     print(f"\n{Colors.CYAN}Launching attack... (Press Ctrl+C to stop){Colors.RESET}")
     try:
         if os.geteuid() != 0:
@@ -173,13 +127,9 @@ def run_command(cmd: List[str], attack_type: str) -> None:
     print(f"\n{Colors.GREEN}Attack finished.{Colors.RESET}")
     pause()
 
-# ---------------------------------------------------------------------------
-# DHCP Attack Module
-# ---------------------------------------------------------------------------
 class DHCPAttacks:
     @staticmethod
-    def run(args: List[str]) -> None:
-        """Execute pig.py with the given arguments."""
+    def run(args):
         iface = DHCPAttacks._extract_iface(args)
         if not iface:
             iface = iface_mgr.get_interface()
@@ -193,8 +143,7 @@ class DHCPAttacks:
         run_command(cmd, "DHCP")
 
     @staticmethod
-    def _extract_iface(args: List[str]) -> Optional[str]:
-        """Extract interface from argument list if present."""
+    def _extract_iface(args):
         try:
             idx = args.index("-i")
             return args[idx + 1]
@@ -202,8 +151,7 @@ class DHCPAttacks:
             return None
 
     @staticmethod
-    def quick_menu() -> None:
-        """Display quick DHCP attack profiles."""
+    def quick_menu():
         while True:
             clear_screen()
             logo()
@@ -232,8 +180,6 @@ class DHCPAttacks:
                 macs = input(f"{Colors.CYAN}Enter MACs (comma separated): {Colors.RESET}").strip()
                 if macs:
                     DHCPAttacks.run(["-s", macs])
-                else:
-                    print(f"{Colors.RED}No MACs provided.{Colors.RESET}")
             elif choice == "6":
                 DHCPAttacks.run(["-6"])
             elif choice == "7":
@@ -246,8 +192,7 @@ class DHCPAttacks:
                 print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
     @staticmethod
-    def advanced_wizard() -> None:
-        """Step-by-step wizard for building a custom pig.py command."""
+    def advanced_wizard():
         args = []
         clear_screen()
         logo()
@@ -277,20 +222,12 @@ class DHCPAttacks:
         threads = input(f"{Colors.CYAN}Threads (default 1): {Colors.RESET}").strip()
         if threads: args.extend(["-t", threads])
 
-        if input(f"{Colors.CYAN}Show ARP who-has? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-a")
-        if input(f"{Colors.CYAN}Show ICMP requests? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-i")
-        if input(f"{Colors.CYAN}Show lease options? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-o")
-        if input(f"{Colors.CYAN}Show lease confirmations? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-l")
-        if input(f"{Colors.CYAN}Gratuitous ARP neighbor attack? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-g")
-        if input(f"{Colors.CYAN}Release all neighbor IPs? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-r")
-        if input(f"{Colors.CYAN}ARP neighbor scan? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-n")
+        for opt, flag in [("Show ARP who-has?", "-a"), ("Show ICMP requests?", "-i"),
+                          ("Show lease options?", "-o"), ("Show lease confirmations?", "-l"),
+                          ("Gratuitous ARP neighbor attack?", "-g"),
+                          ("Release all neighbor IPs?", "-r"), ("ARP neighbor scan?", "-n")]:
+            if input(f"{Colors.CYAN}{opt} [y/N]: {Colors.RESET}").strip().lower() == "y":
+                args.append(flag)
 
         t_spawn = input(f"{Colors.CYAN}Thread spawn timeout (default 0.4): {Colors.RESET}").strip()
         if t_spawn: args.extend(["-x", t_spawn])
@@ -305,8 +242,7 @@ class DHCPAttacks:
         DHCPAttacks._final_review(args, lambda a: DHCPAttacks.run(a))
 
     @staticmethod
-    def _final_review(args: List[str], run_func) -> None:
-        """Loop for final review, edit, run, or abort."""
+    def _final_review(args, run_func):
         while True:
             clear_screen()
             logo()
@@ -331,8 +267,7 @@ class DHCPAttacks:
                 print(f"{Colors.RED}Invalid choice.{Colors.RESET}")
 
     @staticmethod
-    def raw_args() -> None:
-        """Accept raw arguments from the user."""
+    def raw_args():
         raw = input(f"{Colors.CYAN}Enter raw arguments: {Colors.RESET}").strip()
         if raw:
             DHCPAttacks.run(raw.split())
@@ -340,8 +275,7 @@ class DHCPAttacks:
             print(f"{Colors.RED}No arguments.{Colors.RESET}")
 
     @staticmethod
-    def main_menu() -> None:
-        """DHCP attack lab main menu."""
+    def main_menu():
         while True:
             clear_screen()
             logo()
@@ -364,13 +298,9 @@ class DHCPAttacks:
             else:
                 print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
-# ---------------------------------------------------------------------------
-# DNS Attack Module
-# ---------------------------------------------------------------------------
 class DNSAttacks:
     @staticmethod
-    def run(args: List[str]) -> None:
-        """Execute dnsforge with the given arguments."""
+    def run(args):
         mode = None
         if "respond" in args:
             mode = "respond"
@@ -405,8 +335,7 @@ class DNSAttacks:
         run_command(cmd, "DNS")
 
     @staticmethod
-    def _extract_iface(args: List[str]) -> Optional[str]:
-        """Extract interface from argument list."""
+    def _extract_iface(args):
         for flag in ("-i", "--interface"):
             try:
                 idx = args.index(flag)
@@ -416,8 +345,7 @@ class DNSAttacks:
         return None
 
     @staticmethod
-    def quick_menu() -> None:
-        """Display quick DNS attack profiles."""
+    def quick_menu():
         while True:
             clear_screen()
             logo()
@@ -456,8 +384,7 @@ class DNSAttacks:
                 print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
     @staticmethod
-    def advanced_wizard() -> None:
-        """Step-by-step wizard for dnsforge."""
+    def advanced_wizard():
         args = []
         clear_screen()
         logo()
@@ -502,8 +429,7 @@ class DNSAttacks:
         DHCPAttacks._final_review(args + [mode], lambda a: DNSAttacks.run(a))
 
     @staticmethod
-    def raw_args() -> None:
-        """Accept raw arguments from the user."""
+    def raw_args():
         raw = input(f"{Colors.CYAN}Enter raw arguments (including mode): {Colors.RESET}").strip()
         if raw:
             DNSAttacks.run(raw.split())
@@ -511,8 +437,7 @@ class DNSAttacks:
             print(f"{Colors.RED}No arguments.{Colors.RESET}")
 
     @staticmethod
-    def main_menu() -> None:
-        """DNS attack lab main menu."""
+    def main_menu():
         while True:
             clear_screen()
             logo()
@@ -535,81 +460,7 @@ class DNSAttacks:
             else:
                 print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
-# ---------------------------------------------------------------------------
-# Informational Modules (unchanged content, adapted to Python)
-# ---------------------------------------------------------------------------
-def show_module(title: str, risk: str, observe: str, protect: str) -> None:
-    """Display an informational security module."""
-    clear_screen()
-    logo()
-    banner(f"Module: {title}")
-    print(f"\n{Colors.BOLD}{title}{Colors.RESET}")
-    print(f"\n{Colors.CYAN}Risk:{Colors.RESET} {risk}")
-    print(f"\n{Colors.CYAN}What to monitor:{Colors.RESET}\n{observe}")
-    print(f"\n{Colors.CYAN}Defensive focus:{Colors.RESET}\n{protect}")
-    log_access(title)
-
-def dhcp_module() -> None:
-    show_module(
-        "DHCP resilience",
-        "Address allocation can be disrupted or clients can receive untrusted network settings.",
-        "Unexpected DHCP offers, unusually rapid lease consumption, and requests from untrusted switch ports.",
-        "Use DHCP snooping, trust only uplink/server ports, rate-limit requests, and alert on lease-pool exhaustion."
-    )
-
-def arp_module() -> None:
-    show_module(
-        "ARP integrity",
-        "Incorrect IP-to-MAC mappings can redirect local network traffic.",
-        "Frequent ARP changes, duplicate IP warnings, and gateway MAC changes across endpoints.",
-        "Enable Dynamic ARP Inspection where supported, validate bindings, segment networks, and investigate anomalies."
-    )
-
-def mac_module() -> None:
-    show_module(
-        "Switch port security",
-        "Excessive or changing source MAC addresses can affect forwarding behavior.",
-        "Sudden MAC-table growth, port-security events, and rapidly changing source addresses.",
-        "Set per-port MAC limits, use sticky MAC, disable unused ports, and retain switch logs."
-    )
-
-def dns_module() -> None:
-    show_module(
-        "DNS trust",
-        "Unexpected name-resolution responses can send users/services to the wrong destination.",
-        "Resolver changes, unusual TTL values, lookup failures, and responses from unapproved servers.",
-        "Use approved resolvers, restrict DNS egress, validate DNSSEC, and monitor resolver logs."
-    )
-
-def icmp_module() -> None:
-    show_module(
-        "ICMP availability",
-        "A surge of diagnostic traffic can consume resources or conceal other network events.",
-        "Sustained ICMP volume, packet loss, elevated latency, and ingress/egress mismatch.",
-        "Apply measured rate limits, keep essential diagnostic messages available, and alert on baselines."
-    )
-
-def show_checklist() -> None:
-    """Display the defender readiness checklist."""
-    clear_screen()
-    logo()
-    banner("Defender Readiness Checklist")
-    print(f"""{Colors.YELLOW}
-[ ] Document trusted DHCP and DNS infrastructure.
-[ ] Enable and review switch security logging.
-[ ] Separate user, server, and management network segments.
-[ ] Establish normal traffic baselines before an incident.
-[ ] Test alert escalation and recovery procedures in an authorized lab.
-[ ] Keep device firmware and network configurations backed up.
-{Colors.RESET}""")
-    log_access("Defender readiness checklist")
-    pause()
-
-# ---------------------------------------------------------------------------
-# Main Menu
-# ---------------------------------------------------------------------------
-def main_menu() -> None:
-    """Main dashboard loop."""
+def main_menu():
     while True:
         clear_screen()
         logo()
@@ -631,43 +482,20 @@ def main_menu() -> None:
         else:
             print(f"{Colors.RED}Please select a listed option.{Colors.RESET}")
 
-# ---------------------------------------------------------------------------
-# CLI Argument Handling
-# ---------------------------------------------------------------------------
-def handle_arg(arg: str) -> None:
-    """Jump directly to a module based on the command-line argument."""
+def handle_arg(arg):
     arg = arg.lower()
-    mapping = {
-        "dhcp": dhcp_module, "1": dhcp_module,
-        "arp": arp_module, "2": arp_module,
-        "mac": mac_module, "3": mac_module,
-        "dns": dns_module, "4": dns_module,
-        "icmp": icmp_module, "5": icmp_module,
-        "checklist": show_checklist, "6": show_checklist,
-        "attack": DHCPAttacks.main_menu, "dhcplab": DHCPAttacks.main_menu, "7": DHCPAttacks.main_menu,
-        "dnsattack": DNSAttacks.main_menu, "8": DNSAttacks.main_menu,
-    }
-    if arg in mapping:
-        mapping[arg]()
+    if arg in ("dhcplab", "dhcp", "attack", "7"):
+        DHCPAttacks.main_menu()
+    elif arg in ("dnsattack", "dns", "8"):
+        DNSAttacks.main_menu()
     elif arg in ("-h", "--help"):
         print(f"""Project Nemesis v{VERSION}
-A safe, educational network-security dashboard with DHCP and DNS attack labs.
-
-Usage:
-  {sys.argv[0]}                     Launch interactive menu
-  {sys.argv[0]} <module>            Jump directly to a module
-  {sys.argv[0]} -h, --help          Show this help
-  {sys.argv[0]} --version           Show version
-
-Modules (name or number):
-  1 / dhcp               DHCP resilience (info)
-  2 / arp                ARP integrity (info)
-  3 / mac                Switch port security (info)
-  4 / dns                DNS trust (info)
-  5 / icmp               ICMP availability (info)
-  6 / checklist          Defender readiness checklist
-  7 / attack / dhcplab   DHCP attack lab
-  8 / dnsattack          DNS attack lab
+Usage: {sys.argv[0]} [module]
+Modules:
+  dhcplab / attack   DHCP Attack Lab
+  dnsattack          DNS Attack Lab
+  -h, --help         Show this help
+  --version          Show version
 """)
     elif arg == "--version":
         print(f"Project Nemesis v{VERSION}")
@@ -675,9 +503,6 @@ Modules (name or number):
         print(f"Unknown module: {arg}", file=sys.stderr)
         sys.exit(1)
 
-# ---------------------------------------------------------------------------
-# Entry Point
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         handle_arg(sys.argv[1])
