@@ -1,2 +1,2 @@
 # Project-Nemesis
-Project Nemesis: Windows Infrastructure Attack Simulation
+Project Nemesis: Windows Services Security Pentest Project
