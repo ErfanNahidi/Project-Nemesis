@@ -1,0 +1,41 @@
+# isolation_test — payload isolation catalog
+#
+# Answers the question: is Defender detecting the loader code
+# or the GodPotato shellcode content?
+#
+# Run this catalog with --payload pointing to a benign PE (notepad.exe,
+# calc.exe) to test whether the loader itself is clean.
+# Then compare against the adscan_loader catalog run (GodPotato payload)
+# to isolate the source of detection.
+#
+# Expected outcomes:
+#   baseline_benign  CLEAN  → loader code is fine, problem is GodPotato payload
+#   baseline_benign  DETECTED → loader itself has detectable features
+#
+# Usage:
+#   python -m avlab ablate \
+#     --catalog catalogs/isolation_test.yaml \
+#     --payload /path/to/notepad.exe \
+#     --scan-mode rtp ...
+
+catalog: isolation_test
+description: >
+  Single-variant baseline run against a benign payload to isolate
+  whether Defender is keying on the loader code or the wrapped payload.
+
+payload:
+  name: notepad
+  local_path: /usr/share/windows-binaries/whoami.exe
+  donut_args: ""
+
+loader_mode: exec
+
+variants:
+  - name: baseline_benign
+    notes: "Loader baseline wrapping a benign payload. CLEAN = loader is fine."
+    toggles: {}
+
+  - name: no_xor_benign
+    notes: "No XOR, benign payload. Tests if plaintext shellcode of a benign PE detects."
+    toggles:
+      xor_encrypt: false

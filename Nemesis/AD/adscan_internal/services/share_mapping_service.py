@@ -1,0 +1,350 @@
+"""SMB share mapping service based on NetExec spider_plus metadata.
+
+This service centralizes consolidation of per-host ``spider_plus`` JSON output
+into one domain-scoped mapping file that can be reused across future scans.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+import os
+
+from adscan_internal.services.base_service import BaseService
+from adscan_internal.services.smb_exclusion_policy import (
+    is_globally_excluded_smb_relative_path,
+)
+from adscan_internal.services.smb_sensitive_file_policy import (
+    resolve_effective_sensitive_extension,
+)
+from adscan_internal.workspaces import read_json_file, write_json_file
+
+
+def _now_utc_iso() -> str:
+    """Return an ISO-8601 UTC timestamp with second precision."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _unique_sorted(values: list[str]) -> list[str]:
+    """Return sorted unique non-empty strings preserving deterministic output."""
+    return sorted(
+        {value for value in values if isinstance(value, str) and value.strip()}
+    )
+
+
+class ShareMappingService(BaseService):
+    """Merge NetExec spider_plus metadata into a persistent domain map."""
+
+    def merge_spider_plus_run(
+        self,
+        *,
+        domain: str,
+        principal: str,
+        run_id: str,
+        run_output_dir: str,
+        aggregate_map_path: str,
+        requested_hosts: list[str],
+        requested_shares: list[str],
+        host_share_permissions: dict[str, dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Merge one spider_plus run into a consolidated mapping JSON.
+
+        Args:
+            domain: Domain where the spidering run was executed.
+            principal: Logical principal label used for the run (e.g. user).
+            run_id: Unique run identifier.
+            run_output_dir: Directory where spider_plus wrote host JSON files.
+            aggregate_map_path: Destination JSON path for consolidated map.
+            requested_hosts: Host targets requested for the run.
+            requested_shares: Shares requested/known at run start.
+            host_share_permissions: Optional host->share->permission map.
+
+        Returns:
+            Summary dictionary with counts and output paths.
+        """
+        observed_at = _now_utc_iso()
+        host_json_files = sorted(Path(run_output_dir).glob("*.json"))
+        aggregate = self._load_or_init_aggregate(
+            domain=domain,
+            aggregate_map_path=aggregate_map_path,
+        )
+        merged_file_entries = 0
+        merged_hosts = 0
+        merged_shares = 0
+
+        for host_json in host_json_files:
+            try:
+                host_data = read_json_file(str(host_json))
+            except Exception:
+                # Malformed file should not stop a full run merge.
+                self.logger.exception(
+                    "Failed to parse spider_plus host metadata file: %s",
+                    host_json,
+                )
+                continue
+
+            if not isinstance(host_data, dict):
+                continue
+
+            host = host_json.stem
+            host_bucket = aggregate["hosts"].setdefault(
+                host,
+                {
+                    "first_seen": observed_at,
+                    "last_seen": observed_at,
+                    "shares": {},
+                },
+            )
+            host_bucket["last_seen"] = observed_at
+            merged_hosts += 1
+
+            for share_name, files_map in host_data.items():
+                if not isinstance(share_name, str) or not isinstance(files_map, dict):
+                    continue
+
+                share_bucket = host_bucket["shares"].setdefault(
+                    share_name,
+                    {
+                        "first_seen": observed_at,
+                        "last_seen": observed_at,
+                        "files": {},
+                        "file_count": 0,
+                    },
+                )
+                share_bucket["last_seen"] = observed_at
+                merged_shares += 1
+
+                for remote_path, metadata in files_map.items():
+                    if not isinstance(remote_path, str):
+                        continue
+                    file_metadata = metadata if isinstance(metadata, dict) else {}
+                    existing = share_bucket["files"].get(remote_path, {})
+                    share_bucket["files"][remote_path] = {
+                        "size": str(
+                            file_metadata.get("size", existing.get("size", ""))
+                        ),
+                        "ctime_epoch": str(
+                            file_metadata.get(
+                                "ctime_epoch", existing.get("ctime_epoch", "")
+                            )
+                        ),
+                        "mtime_epoch": str(
+                            file_metadata.get(
+                                "mtime_epoch", existing.get("mtime_epoch", "")
+                            )
+                        ),
+                        "atime_epoch": str(
+                            file_metadata.get(
+                                "atime_epoch", existing.get("atime_epoch", "")
+                            )
+                        ),
+                        "last_seen": observed_at,
+                    }
+                    merged_file_entries += 1
+
+                share_bucket["file_count"] = len(share_bucket["files"])
+
+        principal_key = principal.strip() or "unknown"
+        principal_bucket = aggregate["principals"].setdefault(
+            principal_key,
+            {
+                "first_seen": observed_at,
+                "last_seen": observed_at,
+                "runs": [],
+                "requested_hosts": [],
+                "requested_shares": [],
+                "host_share_permissions": {},
+            },
+        )
+        principal_bucket["last_seen"] = observed_at
+        principal_bucket["requested_hosts"] = _unique_sorted(
+            list(principal_bucket["requested_hosts"]) + requested_hosts
+        )
+        principal_bucket["requested_shares"] = _unique_sorted(
+            list(principal_bucket["requested_shares"]) + requested_shares
+        )
+        if run_id not in principal_bucket["runs"]:
+            principal_bucket["runs"].append(run_id)
+
+        if host_share_permissions:
+            for host, share_perms in host_share_permissions.items():
+                if not isinstance(host, str) or not isinstance(share_perms, dict):
+                    continue
+                host_perm_bucket = principal_bucket[
+                    "host_share_permissions"
+                ].setdefault(host, {})
+                for share_name, perms in share_perms.items():
+                    if isinstance(share_name, str) and isinstance(perms, str):
+                        host_perm_bucket[share_name] = perms
+
+        aggregate["runs"].append(
+            {
+                "run_id": run_id,
+                "timestamp": observed_at,
+                "principal": principal_key,
+                "run_output_dir": run_output_dir,
+                "host_json_files": len(host_json_files),
+                "merged_hosts": merged_hosts,
+                "merged_shares": merged_shares,
+                "merged_file_entries": merged_file_entries,
+                "requested_hosts": _unique_sorted(requested_hosts),
+                "requested_shares": _unique_sorted(requested_shares),
+            }
+        )
+        aggregate["runs"] = aggregate["runs"][-200:]
+        aggregate["updated_at"] = observed_at
+        os.makedirs(os.path.dirname(aggregate_map_path), exist_ok=True)
+        write_json_file(aggregate_map_path, aggregate)
+
+        return {
+            "aggregate_map_path": aggregate_map_path,
+            "run_output_dir": run_output_dir,
+            "host_json_files": len(host_json_files),
+            "merged_hosts": merged_hosts,
+            "merged_shares": merged_shares,
+            "merged_file_entries": merged_file_entries,
+            "run_id": run_id,
+        }
+
+    def resolve_candidate_remote_paths_from_aggregate(
+        self,
+        *,
+        aggregate_map_path: str,
+        hosts: list[str],
+        shares: list[str],
+        extensions: tuple[str, ...],
+        max_file_size_bytes: int | None = None,
+    ) -> dict[tuple[str, str], list[str]]:
+        """Resolve remote candidate paths grouped by host/share from aggregate JSON."""
+        if not aggregate_map_path or not os.path.exists(aggregate_map_path):
+            return {}
+        aggregate = read_json_file(aggregate_map_path)
+        if not isinstance(aggregate, dict):
+            return {}
+        hosts_bucket = aggregate.get("hosts")
+        if not isinstance(hosts_bucket, dict):
+            return {}
+
+        requested_hosts = {
+            str(host).strip().casefold() for host in hosts if str(host).strip()
+        }
+        requested_shares = {
+            str(share).strip().casefold() for share in shares if str(share).strip()
+        }
+        normalized_extensions = {
+            str(extension).strip().casefold()
+            for extension in extensions
+            if str(extension).strip()
+        }
+        if not normalized_extensions:
+            return {}
+
+        resolved: dict[tuple[str, str], list[str]] = {}
+        seen: dict[tuple[str, str], set[str]] = {}
+
+        for host_name, host_entry in hosts_bucket.items():
+            if not isinstance(host_name, str) or not isinstance(host_entry, dict):
+                continue
+            if requested_hosts and host_name.casefold() not in requested_hosts:
+                continue
+            shares_bucket = host_entry.get("shares")
+            if not isinstance(shares_bucket, dict):
+                continue
+            for share_name, share_entry in shares_bucket.items():
+                if not isinstance(share_name, str) or not isinstance(share_entry, dict):
+                    continue
+                if requested_shares and share_name.casefold() not in requested_shares:
+                    continue
+                files_bucket = share_entry.get("files")
+                if not isinstance(files_bucket, dict):
+                    continue
+                bucket_key = (host_name, share_name)
+                bucket = resolved.get(bucket_key)
+                bucket_seen = seen.get(bucket_key)
+                for remote_path, metadata in files_bucket.items():
+                    if not isinstance(remote_path, str):
+                        continue
+                    normalized_path = remote_path.strip()
+                    if not normalized_path:
+                        continue
+                    if is_globally_excluded_smb_relative_path(normalized_path):
+                        continue
+                    if resolve_effective_sensitive_extension(
+                        normalized_path,
+                        allowed_extensions=tuple(normalized_extensions),
+                    ) not in normalized_extensions:
+                        continue
+                    if (
+                        isinstance(max_file_size_bytes, int)
+                        and max_file_size_bytes > 0
+                        and self._parse_size_to_bytes(
+                            str((metadata or {}).get("size", "")).strip()
+                            if isinstance(metadata, dict)
+                            else ""
+                        )
+                        > max_file_size_bytes
+                    ):
+                        continue
+                    if bucket is None:
+                        bucket = resolved.setdefault(bucket_key, [])
+                    if bucket_seen is None:
+                        bucket_seen = seen.setdefault(bucket_key, set())
+                    dedup_key = normalized_path.casefold()
+                    if dedup_key in bucket_seen:
+                        continue
+                    bucket_seen.add(dedup_key)
+                    bucket.append(normalized_path)
+        return resolved
+
+    @staticmethod
+    def _parse_size_to_bytes(size_text: str) -> int:
+        """Parse one human-readable size field into bytes when possible."""
+        text = str(size_text or "").strip()
+        if not text:
+            return 0
+        parts = text.split()
+        if not parts:
+            return 0
+        try:
+            value = float(parts[0])
+        except ValueError:
+            return 0
+        unit = parts[1].upper() if len(parts) > 1 else "B"
+        factors = {
+            "B": 1,
+            "KB": 1024,
+            "MB": 1024 * 1024,
+            "GB": 1024 * 1024 * 1024,
+            "TB": 1024 * 1024 * 1024 * 1024,
+        }
+        factor = factors.get(unit)
+        if factor is None:
+            return 0
+        return int(value * factor)
+
+    def _load_or_init_aggregate(
+        self,
+        *,
+        domain: str,
+        aggregate_map_path: str,
+    ) -> dict[str, Any]:
+        """Load existing aggregate map or create a default structure."""
+        if os.path.exists(aggregate_map_path):
+            existing = read_json_file(aggregate_map_path)
+            if isinstance(existing, dict) and existing.get("schema_version") == 1:
+                existing.setdefault("hosts", {})
+                existing.setdefault("principals", {})
+                existing.setdefault("runs", [])
+                return existing
+
+        now = _now_utc_iso()
+        return {
+            "schema_version": 1,
+            "domain": domain,
+            "created_at": now,
+            "updated_at": now,
+            "hosts": {},
+            "principals": {},
+            "runs": [],
+        }

@@ -1,0 +1,113 @@
+# adscan_loader toggle-ablation catalog
+#
+# Each entry declares one ToggleSpec variant.  The avlab runner builds and
+# scans them all, producing a matrix.json + matrix.md per run.
+#
+# Field defaults match ToggleSpec defaults (see avlab/core/models.py).
+# Omitted fields inherit the ToggleSpec default.
+#
+# Naming convention:
+#   "baseline"  — all default-True layers ON, all default-False layers OFF.
+#                 This is the production build that Defender catches.
+#   "no_<X>"    — baseline with layer X disabled (one toggle at a time).
+#   "no_<X>_no_<Y>" — two layers disabled simultaneously.
+#
+# Add new variants here as new OPSEC layers are implemented.
+
+catalog: adscan_loader
+description: >
+  Toggle-ablation matrix for adscan_loader.exe (EXEC mode).
+  Identifies which OPSEC layer(s) drive detection vs. bypass.
+
+# Payload wrapped inside every loader variant (donut → shellcode).
+# local_path resolved at build time; override with --payload-path on CLI.
+payload:
+  name: godpotato-net4
+  local_path: ~/Downloads/GodPotato-NET4.exe
+  donut_args: ""
+
+loader_mode: exec
+
+# ---------------------------------------------------------------------------
+# Single-layer ablation — one feature removed at a time
+# ---------------------------------------------------------------------------
+
+variants:
+
+  # Production build — all layers active.  Expected: DETECTED.
+  - name: baseline
+    notes: "Full OPSEC stack. Expect detection."
+    toggles: {}
+
+  # Remove ntdll unhooking — EDR hooks stay active before syscalls.
+  - name: no_ntdll_unhook
+    toggles:
+      ntdll_unhook: false
+
+  # Remove ETW patch — EtwEventWrite fires normally.
+  - name: no_etw_patch
+    toggles:
+      etw_patch: false
+
+  # Remove AMSI patch — AmsiScanBuffer active.
+  - name: no_amsi_patch
+    toggles:
+      amsi_patch: false
+
+  # Remove anti-debug gate — runs under debuggers and sandboxes.
+  - name: no_anti_debug
+    toggles:
+      anti_debug: false
+
+  # Remove XOR encryption — plaintext shellcode blob in the binary.
+  # Strongest static indicator; expect detection regardless.
+  - name: no_xor_encrypt
+    toggles:
+      xor_encrypt: false
+
+  # ---------------------------------------------------------------------------
+  # Two-layer combinations — narrow down interacting features
+  # ---------------------------------------------------------------------------
+
+  - name: no_etw_no_amsi
+    notes: "Both user-mode evasion patches removed."
+    toggles:
+      etw_patch: false
+      amsi_patch: false
+
+  - name: no_unhook_no_etw
+    toggles:
+      ntdll_unhook: false
+      etw_patch: false
+
+  - name: no_unhook_no_amsi
+    toggles:
+      ntdll_unhook: false
+      amsi_patch: false
+
+  - name: no_unhook_no_etw_no_amsi
+    notes: "All three user-mode patches removed."
+    toggles:
+      ntdll_unhook: false
+      etw_patch: false
+      amsi_patch: false
+
+  # ---------------------------------------------------------------------------
+  # Static-analysis evasion layers (default-False — future implementations)
+  # ---------------------------------------------------------------------------
+
+  - name: strip_metadata
+    notes: "Strip PE metadata (RC manifest, debug info, timestamps)."
+    toggles:
+      strip_metadata: true
+
+  - name: minimal_imports
+    notes: "Minimal IAT — reduce static import footprint."
+    toggles:
+      minimal_imports: true
+
+  - name: strip_meta_min_imports
+    notes: "Both static-analysis layers active together."
+    toggles:
+      strip_metadata: true
+      minimal_imports: true

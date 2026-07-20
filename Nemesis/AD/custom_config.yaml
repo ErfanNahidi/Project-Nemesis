@@ -1,0 +1,438 @@
+# custom_config.yaml — ADscan custom CredSweeper rules
+#
+# PURPOSE
+# -------
+# CredSweeper's ML model is trained on English-only corpora.  When multilingual
+# password keywords (contraseña, kennwort, mot de passe, …) appear in share
+# loot, the ML scorer rejects them at the default threshold (0.5), producing
+# zero hits.  These custom rules bypass the ML gate by using `use_ml: false`
+# and compensate with tighter regex patterns instead.
+#
+# ARCHITECTURE
+# ------------
+# ADscan runs two ruleset passes over every scan target:
+#   primary   — upstream config.yaml,   ml_threshold=0.5  (English ML works)
+#   custom    — this file,              ml_threshold=0.0  (ML disabled)
+#
+# The custom pass is intentionally additive: it only fires for patterns the
+# primary pass misses (non-English keywords, narrative verb anchors, etc.).
+#
+# TIER MODEL
+# ----------
+# Lower contextual certainty → stricter value pattern (compensates for no ML):
+#
+#   STRONG  keyword + separator unambiguous (Kennwort:, contraseña =)
+#           value:  [^\s"'{}\[\]<>]{6,80}  — no complexity required
+#           rationale: the structural separator is strong enough evidence
+#
+#   MEDIUM  narrative / verb anchor (cambiado a X, nueva contraseña X)
+#           value:  requires letter + (uppercase OR digit OR symbol), min 7
+#           rationale: no structural separator, so value must look like a
+#           credential on its own
+#
+#   LOOSE   single keyword without separator — NOT used here; too noisy.
+#           Let the upstream primary pass handle generic keyword rules.
+#
+# HOW TO ADD A NEW LANGUAGE PACK
+# --------------------------------
+#   1. Add a STRONG-tier rule:
+#      - keyword: the native-language word(s) for "password"
+#      - pattern: keyword + optional modifier (del admin, etc.) + [:=] + value
+#      - required_substrings: the unaccented stem (for fast pre-filter)
+#      - use_ml: false
+#      - filter_type: include ValueAllowlistCheck, ValuePatternCheck(4),
+#        ValueDictionaryKeywordCheck, LineGitBinaryCheck, LineUUEPartCheck,
+#        ValueFilePathCheck
+#   2. Add MEDIUM-tier verb/narrative rules only if the language commonly
+#      writes passwords in narrative sentences (e.g. "password changed to X").
+#   3. Test with:
+#      credsweeper --rules custom_config.yaml --doc --ml_threshold 0 \
+#        --path <fixtures_dir>
+#   4. Verify zero hits on false_positives_es.txt before merging.
+#
+# WHY use_ml: false ON MULTILINGUAL RULES
+# ----------------------------------------
+# CredSweeper's ML model (binary classifier) was trained on English-language
+# secret patterns.  For non-English keywords the model scores every candidate
+# near 0.0 regardless of value quality.  Enabling ML at any threshold >0.0
+# silently drops all multilingual hits.  Setting use_ml: false skips the ML
+# inference stage entirely for these rules, relying on the regex + filter
+# pipeline instead.  The primary ruleset is unaffected.
+
+# ─────────────────────────────────────────────────────────────────
+# ENGLISH BASELINE RULES  (use_ml: true — ML works for English)
+# Non-English keywords are NOT included here to avoid dead code:
+# the ML model scores them near 0.0 and silently drops every hit.
+# Multilingual coverage lives exclusively in the STRONG/MEDIUM tiers below.
+# ─────────────────────────────────────────────────────────────────
+
+- name: CMD Net Use
+  severity: high
+  confidence: moderate
+  type: pattern
+  values:
+    # Word-boundary anchors prevent matches inside academic prose like
+    # "Internet use", "Cabinet use", "magnetic use" — observed flooding
+    # the document phase with thousands of FPs from research PDFs.
+    # Real shell invocations (net use Z: \\srv\share /user:DOM\u pass)
+    # always have whitespace before "net" and after "use", so \b suffices.
+    - (?i)\bnet\s+use\b(?:\s+\S+){2,}\s+(?P<value>[^\s"'{}\[\]<>]{4,80})(?:\s*$)
+  filter_type: GeneralKeyword
+  use_ml: true
+  required_substrings:
+    - net
+    - use
+  min_line_len: 20
+  target:
+    - code
+    - doc
+
+- name: DOC Password To
+  severity: medium
+  confidence: moderate
+  type: pattern
+  values:
+    # English only. ML model handles English values well; non-English keywords
+    # are covered by the STRONG-tier rules below (use_ml: false).
+    # Catches: "password to VALUE", "set password to VALUE", etc.
+    #
+    # NO complexity lookahead here — this is intentional and was a
+    # validated decision (see BACKLOG). Domain password policies vary:
+    # legacy AD environments and service accounts can hold real
+    # all-lowercase passwords (``welcome``, ``monkey``, ``letmein``).
+    # Adding a complexity gate would silently drop those TPs. The
+    # downstream filter responsible for English-prose FPs like
+    # ``password mentioned above`` or ``password to something secure``
+    # is the spray gate / ML-confidence layer (see BACKLOG entry
+    # "Plausibility Tier 2.5"), not this regex.
+    - (?i:(?:set|reset|change|changed|update|updated|assign|assigned|use|using|initial|temporary|temp|default|new|login|logon|first)\b[\w\s,/-]{0,40})?\bpassw?o?r?d\b[\w\s,/-]{0,20}\bto\b\s*(?P<quote>["'`]{0,3})(?P<value>[^\s"'{}\[\]<>]{8,80})(?(quote)(?P=quote))
+  filter_type: GeneralKeyword
+  use_ml: true
+  required_substrings:
+    - pass
+    - to
+  min_line_len: 16
+  target:
+    - code
+    - doc
+
+- name: DOC Password Inline
+  severity: medium
+  confidence: moderate
+  type: pattern
+  values:
+    # English only. ML model handles English values well; non-English keywords
+    # are covered by the STRONG-tier rules below (use_ml: false).
+    # Catches: "password VALUE", "and password VALUE" in natural language prose.
+    #
+    # NO complexity lookahead here — same recall-first reasoning as
+    # `DOC Password To` above. Legacy AD with relaxed policies, service
+    # accounts, and inherited credentials can hold all-lowercase TPs
+    # (``welcome``, ``monkey``, ``letmein``). Adding ``(?=\S*[A-Z0-9_!@#$%^&*-])``
+    # would drop them. The downstream filter for the English-prose FP
+    # class (``password mentioned``, ``password something``) belongs in
+    # the ML-confidence-aware spray gate — see BACKLOG entry
+    # "Plausibility Tier 2.5". DO NOT reintroduce a complexity gate here
+    # without revisiting that decision.
+    - (?i:(?:and|or)\s+)?\bpassw?o?r?d\b\s+(?P<quote>["'`]{0,3})(?P<value>[^\s"'{}\[\]<>]{8,80})(?(quote)(?P=quote))
+  filter_type: GeneralKeyword
+  use_ml: true
+  required_substrings:
+    - pass
+  min_line_len: 12
+  target:
+    - code
+    - doc
+
+# ─────────────────────────────────────────────────────────────────
+# STRONG-TIER MULTILINGUAL RULES  (use_ml: false)
+# keyword + optional modifier + structural separator + value
+# ─────────────────────────────────────────────────────────────────
+
+- name: ES Contraseña Inline
+  severity: high
+  confidence: strong
+  type: pattern
+  values:
+    # Matches: "contraseña = X", "La contraseña es: X", "contraseña del admin: X"
+    # Optional single-word or "del/de WORD" modifier before the separator.
+    # Value MUST contain at least one digit or symbol — kills FPs from Spanish
+    # software user guides where "Contraseña: <verb>" prose triggers letter-only
+    # imperative captures (Visualice, Bloquee, …). Real organizational passwords
+    # almost always include a year, !, or other non-letter character.
+    - (?i:(?:la\s+)?contrase[ñn]a(?:\s+(?:de[l]?\s+\S{1,20}|\S{1,20}))?\s*[:=])\s*(?P<quote>["'`]?)(?P<value>[^\s"'{}\[\]<>]{6,80})(?P=quote)?
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - contrase
+  min_line_len: 12
+  target:
+    - code
+    - doc
+
+- name: CA Contrasenya Inline
+  severity: high
+  confidence: strong
+  type: pattern
+  values:
+    # Matches: "contrasenya = X", "La contrasenya és: X", "contrasenya del admin: X"
+    # Covers both Valencian (contrasenya) and transitional spellings.
+    - (?i)(?:la\s+)?contrasen[yn]a(?:\s+(?:de[l]?\s+\S{1,20}|\S{1,20}))?\s*[:=]\s*(?P<quote>["'`]?)(?P<value>[^\s"'{}\[\]<>]{6,80})(?P=quote)?
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - contrasen
+  min_line_len: 12
+  target:
+    - code
+    - doc
+
+- name: DE Kennwort Inline
+  severity: high
+  confidence: strong
+  type: pattern
+  values:
+    # Matches: "Kennwort: X", "Passwort = X", "Kennwörter: X"
+    # Covers German password keywords in singular and plural forms.
+    - (?i)(?:kennwort|kennw[öo]rter|passwort|passw[öo]rter)\s*[:=]\s*(?P<quote>["'`]?)(?P<value>[^\s"'{}\[\]<>]{6,80})(?P=quote)?
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - kennwort
+    - passwort
+  min_line_len: 10
+  target:
+    - code
+    - doc
+
+- name: FR Mot de passe Inline
+  severity: high
+  confidence: strong
+  type: pattern
+  values:
+    # Matches: "mot de passe: X", "mot de passe = X"
+    - (?i)mot\s+de\s+passe\s*[:=]\s*(?P<quote>["'`]?)(?P<value>[^\s"'{}\[\]<>]{6,80})(?P=quote)?
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - mot de passe
+  min_line_len: 14
+  target:
+    - code
+    - doc
+
+- name: PT Senha Inline
+  severity: high
+  confidence: strong
+  type: pattern
+  values:
+    # Matches: "senha: X", "Senha = X"
+    - (?i)senha\s*[:=]\s*(?P<quote>["'`]?)(?P<value>[^\s"'{}\[\]<>]{6,80})(?P=quote)?
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - senha
+  min_line_len: 9
+  target:
+    - code
+    - doc
+
+- name: IT Parola Chiave Inline
+  severity: high
+  confidence: strong
+  type: pattern
+  values:
+    # Matches: "parola chiave: X", "parola d'ordine = X"
+    - (?i)parola\s+(?:chiave|d[''`]ordine)\s*[:=]\s*(?P<quote>["'`]?)(?P<value>[^\s"'{}\[\]<>]{6,80})(?P=quote)?
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - parola
+  min_line_len: 13
+  target:
+    - code
+    - doc
+
+- name: EUS Pasahitza Inline
+  severity: high
+  confidence: strong
+  type: pattern
+  values:
+    # Matches: "pasahitza: X", "Pasahitza = X"
+    # Basque (Euskara) — covers Basque Country engagements.
+    - (?i)pasahitza\s*[:=]\s*(?P<quote>["'`]?)(?P<value>[^\s"'{}\[\]<>]{6,80})(?P=quote)?
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - pasahitza
+  min_line_len: 12
+  target:
+    - code
+    - doc
+
+# ─────────────────────────────────────────────────────────────────
+# MEDIUM-TIER MULTILINGUAL RULES  (use_ml: false)
+# narrative / verb anchor — no structural separator, so value must
+# demonstrate password-like complexity (letter + upper/digit/symbol)
+# ─────────────────────────────────────────────────────────────────
+
+- name: ES/CA Password Changed Verb
+  severity: medium
+  confidence: moderate
+  type: pattern
+  values:
+    # Matches verb-anchored narrative: "cambiado la contraseña a X",
+    # "canviada la contrasenya a X", "contraseña cambiada a X".
+    # Captures up to 4 intermediate words between the verb and the value.
+    # Value complexity: require digit AND uppercase/symbol.
+    # IMPORTANT — (?i) scope: use (?i:...) group so case-insensitive applies
+    # only to the verb, NOT to the value lookaheads. Without this scoping,
+    # (?i) bleeds into [A-Z] making it match lowercase — every Spanish word
+    # passes the "complexity" check, producing hundreds of FPs (septiembre,
+    # sexuales, relacionarse, famílies, l'Entitat…).
+    # MEDIUM-tier is noisier than STRONG (no separator), so we require both a
+    # digit AND an uppercase/symbol — tighter than STRONG's single-char gate.
+    # NOTE: multi-value rules using the same rule name share required_substrings
+    # as an OR check — splitting cambiado/nueva into separate rules is required
+    # because CredSweeper applies only the first matching value pattern per rule
+    # per line, which would silently drop hits on the second pattern.
+    - (?i:(?:cambiada?o?|canviada?|canviat))\b(?:\s+\S+){1,4}\s+(?P<value>(?=\S*[A-Z0-9_!@#$%^&*-])[^\s"'{}\[\]<>]{7,80})
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - cambiada
+    - cambiado
+    - canviada
+    - canviat
+  min_line_len: 14
+  target:
+    - code
+    - doc
+
+- name: ES/CA New Password Narrative
+  severity: medium
+  confidence: moderate
+  type: pattern
+  values:
+    # Matches: "nueva contraseña X", "nova contrasenya por X"
+    # Requires the password noun after the adjective to anchor the match.
+    # Scoped (?i:...) prevents [A-Z] lookahead from matching lowercase via flag bleed.
+    # Requires digit AND uppercase/symbol (MEDIUM-tier tighter gate — no separator).
+    - (?i:(?:nueva|nuevo|nova|nou)\s+(?:contrase[ñn]a|contrasen[yn]a|contrasenya|password|clau))\s+(?:por\s+)?(?P<value>(?=\S*[A-Z0-9_!@#$%^&*-])[^\s"'{}\[\]<>]{7,80})
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - nueva
+    - nuevo
+    - nova
+    - nou
+  min_line_len: 14
+  target:
+    - code
+    - doc
+
+- name: EN Password Changed Narrative
+  severity: medium
+  confidence: moderate
+  type: pattern
+  values:
+    # Matches: "password set/reset/changed to X", "password updated to X"
+    # English narrative — scoped (?i:...) + digit+uppercase/symbol gate.
+    - (?i:\bpassw?o?r?d\b(?:\s+\S+){0,3}\s+\b(?:set|reset|changed|updated|is|was)\b\s+(?:to\s+)?)(?P<value>(?=\S*[A-Z0-9_!@#$%^&*-])[^\s"'{}\[\]<>]{7,80})
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - pass
+  min_line_len: 18
+  target:
+    - code
+    - doc
+
+- name: DE/FR/PT Password Changed Narrative
+  severity: medium
+  confidence: moderate
+  type: pattern
+  values:
+    # German:    "Passwort geändert zu X", "Kennwort geändert zu X"
+    # French:    "mot de passe changé en X"
+    # Portuguese: "senha alterada para X"
+    - (?i:(?:kennwort|passwort)\b(?:\s+\S+){0,3}\s+ge[äa]ndert\s+(?:zu\s+)?)(?P<value>(?=\S*[A-Z0-9_!@#$%^&*-])[^\s"'{}\[\]<>]{7,80})
+    - (?i:mot\s+de\s+passe\b(?:\s+\S+){0,3}\s+chang[eé]\s+(?:en\s+)?)(?P<value>(?=\S*[A-Z0-9_!@#$%^&*-])[^\s"'{}\[\]<>]{7,80})
+    - (?i:senha\b(?:\s+\S+){0,3}\s+alterada\s+(?:para\s+)?)(?P<value>(?=\S*[A-Z0-9_!@#$%^&*-])[^\s"'{}\[\]<>]{7,80})
+  filter_type:
+    - ValueAllowlistCheck
+    - ValuePatternCheck(4)
+    - ValueDictionaryKeywordCheck
+    - LineGitBinaryCheck
+    - LineUUEPartCheck
+    - ValueFilePathCheck
+  use_ml: false
+  required_substrings:
+    - kennwort
+    - passwort
+    - mot de passe
+    - senha
+  min_line_len: 16
+  target:
+    - code
+    - doc

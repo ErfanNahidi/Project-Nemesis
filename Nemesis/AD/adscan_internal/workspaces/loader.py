@@ -1,0 +1,1382 @@
+"""Workspace data loading functionality.
+
+This module handles loading workspace variables from JSON files and applying
+them to the CLI shell instance, including DNS reconfiguration and telemetry updates.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+import ipaddress
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    pass
+
+from adscan_internal import telemetry
+from adscan_internal.logging_config import update_workspace_logging
+from adscan_internal.rich_output import (
+    mark_sensitive,
+    print_error,
+    print_exception,
+    print_info,
+    print_info_debug,
+    print_panel,
+    print_info_verbose,
+    print_success,
+    print_warning,
+    print_warning_verbose,
+)
+from adscan_internal.interaction import is_non_interactive
+from rich.prompt import Confirm, Prompt
+from adscan_internal.workspaces.io import read_json_file
+from adscan_internal.workspaces.state import apply_workspace_variables_to_shell
+from adscan_internal.cli.common import build_telemetry_context
+
+
+def _apply_workspace_name_inference(shell: Any) -> None:
+    """Populate lab inference metadata from the workspace name if not already known.
+
+    Runs at workspace load time regardless of whether ``lab_provider`` is already
+    set.  The guard is ``lab_inference_source``: if it is already populated (e.g.
+    loaded from a persisted ``variables.json`` or set by domain inference in
+    ``start.py``), the function does nothing.
+
+    Two cases are handled:
+
+    * **No ``lab_provider``** — fresh/un-inferred workspace: sets provider, name,
+      whitelisted flag *and* inference metadata (same as the original inline block).
+    * **``lab_provider`` set but ``lab_inference_source`` is None** — existing
+      workspace created before this field was persisted: only fills in the inference
+      metadata when the inferred provider matches the stored one, so we never
+      silently overwrite a manually-configured provider.
+    """
+    if getattr(shell, "lab_inference_source", None) or getattr(
+        shell, "lab_confirmation_state", None
+    ) in {"manual", "accepted_inference"}:
+        return  # Already known — nothing to do
+
+    workspace_name = str(getattr(shell, "current_workspace", None) or "").strip()
+    if not workspace_name or getattr(shell, "type", None) != "ctf":
+        return
+
+    try:
+        from adscan_core.domain_inference import resolve_lab_from_text  # noqa: PLC0415
+
+        inferred = resolve_lab_from_text(workspace_name)
+        if not inferred:
+            return
+
+        inferred_provider, inferred_lab, inferred_whitelisted = inferred
+        existing_provider = getattr(shell, "lab_provider", None)
+
+        if not existing_provider:
+            # Fresh workspace — set lab context and inference metadata.
+            shell.lab_provider = inferred_provider
+            shell.lab_name = inferred_lab
+            shell.lab_name_whitelisted = inferred_whitelisted
+            shell.lab_inference_source = "workspace_name"
+            shell.lab_inference_confidence = 0.70
+            print_info_debug(
+                f"[domain_inference] workspace-load name match (new): "
+                f"provider={inferred_provider} lab={inferred_lab}"
+            )
+        elif existing_provider == inferred_provider:
+            # Retroactive fill: provider already known, just record how it was inferred.
+            shell.lab_inference_source = "workspace_name"
+            shell.lab_inference_confidence = 0.70
+            print_info_debug(
+                f"[domain_inference] workspace-load name match (retroactive): "
+                f"provider={inferred_provider} lab={inferred_lab}"
+            )
+        # If providers differ, leave inference_source as None — origin is ambiguous.
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class WorkspaceLoaderShell(Protocol):
+    """Protocol for shell methods needed by load_workspace_data."""
+
+    current_workspace: str | None
+    current_workspace_dir: str | None
+    current_domain: str | None
+    current_domain_dir: str | None
+    domain: str | None
+    domains: list[str]
+    domains_data: dict[str, Any]
+    pdc: str | None
+    pdc_hostname: str | None
+    type: str | None
+    lab_provider: str | None
+    lab_name: str | None
+    lab_name_whitelisted: bool | None
+    lab_confirmation_state: str | None
+    telemetry: bool
+    variables: dict[str, Any] | None
+
+    def _clean_netexec_workspaces(self, *, use_sudo_if_needed: bool = True) -> bool: ...
+    def do_cd(self, path: str) -> None: ...
+    def do_update_resolv_conf(self, domain_pdc: str) -> bool: ...
+    def convert_hostnames_to_ips_and_scan(
+        self, domain: str, computers_file: str, nmap_dir: str
+    ) -> Any: ...
+    def add_to_hosts(self, domain: str, dns_a_records: list[str] | None = None) -> None: ...
+    def _clean_domain_entries(self, domain: str) -> None: ...
+    def _get_dns_discovery_service(self) -> Any: ...
+
+
+def _capture_workspace_dns_repair_event(
+    *,
+    shell: WorkspaceLoaderShell,
+    event: str,
+    result: str,
+    reason: str | None = None,
+    pdc_changed: bool | None = None,
+) -> None:
+    """Capture workspace DNS repair telemetry with safe, high-signal fields."""
+    properties: dict[str, Any] = {
+        "result": result,
+        "mode": "workspace_load",
+        "interactive": not is_non_interactive(shell=shell),
+        "workspace_type": str(getattr(shell, "type", None) or "unknown"),
+    }
+    if reason is not None:
+        properties["reason"] = reason
+    if pdc_changed is not None:
+        properties["pdc_changed"] = bool(pdc_changed)
+
+    try:
+        telemetry.capture(event, properties=properties)
+    except Exception:
+        # Best-effort telemetry only.
+        return
+
+
+def _restore_hosts_entry_for_domain(
+    shell: WorkspaceLoaderShell,
+    *,
+    domain: str,
+    pdc_ip: str,
+    pdc_hostname: str | None,
+) -> None:
+    """Best-effort restore of /etc/hosts entry for a domain after DNS setup."""
+    original_pdc_hostname = shell.pdc_hostname
+    original_pdc = shell.pdc
+    try:
+        if pdc_hostname:
+            shell.pdc_hostname = pdc_hostname
+        shell.pdc = pdc_ip
+        shell.add_to_hosts(domain)
+    except Exception as exc:
+        marked_domain = mark_sensitive(domain, "domain")
+        print_warning(f"Could not add {marked_domain} to /etc/hosts.")
+        print_exception(show_locals=False, exception=exc)
+        telemetry.capture_exception(exc)
+    finally:
+        shell.pdc_hostname = original_pdc_hostname
+        shell.pdc = original_pdc
+
+
+def _refresh_domain_dc_metadata(
+    shell: WorkspaceLoaderShell,
+    *,
+    domain: str,
+    pdc_ip: str,
+    pdc_hostname: str | None,
+) -> None:
+    """Refresh `dcs`/`dcs_hostnames` for a domain after resolver updates."""
+    from adscan_internal.cli.dns import is_domain_best_effort_mode
+
+    domain_data = shell.domains_data.setdefault(domain, {})
+    old_dcs = (
+        list(domain_data.get("dcs", []))
+        if isinstance(domain_data.get("dcs"), list)
+        else []
+    )
+    old_hosts = (
+        list(domain_data.get("dcs_hostnames", []))
+        if isinstance(domain_data.get("dcs_hostnames"), list)
+        else []
+    )
+
+    discovered_ips: list[str] = []
+    discovered_hosts: list[str] = []
+    dc_ip_to_hostname: dict[str, str] = {}
+    if not is_domain_best_effort_mode(shell, domain):
+        try:
+            service_getter = getattr(shell, "_get_dns_discovery_service", None)
+            if callable(service_getter):
+                service = service_getter()
+                if service is not None and hasattr(
+                    service, "discover_domain_controllers"
+                ):
+                    dc_ips, dc_hostnames, ip_to_host = (
+                        service.discover_domain_controllers(
+                            domain=(domain or "").strip().rstrip("."),
+                            pdc_ip=pdc_ip,
+                            preferred_ips=[pdc_ip],
+                        )
+                    )
+                    if isinstance(dc_ips, list):
+                        discovered_ips = [
+                            str(ip).strip() for ip in dc_ips if str(ip).strip()
+                        ]
+                    if isinstance(dc_hostnames, list):
+                        discovered_hosts = [
+                            str(host).strip()
+                            for host in dc_hostnames
+                            if str(host).strip()
+                        ]
+                    if isinstance(ip_to_host, dict):
+                        dc_ip_to_hostname = {
+                            str(k): str(v)
+                            for k, v in ip_to_host.items()
+                            if str(k).strip()
+                        }
+        except Exception as exc:
+            telemetry.capture_exception(exc)
+            print_info_debug(
+                f"[workspace_load] Failed to refresh DC metadata for {mark_sensitive(domain, 'domain')}: {exc}"
+            )
+    else:
+        print_info_debug(
+            f"[workspace_load] Best-effort DNS mode active for {mark_sensitive(domain, 'domain')}; "
+            "skipping SRV-based DC metadata refresh"
+        )
+
+    dcs: list[str] = []
+    for ip_value in discovered_ips:
+        if ip_value and ip_value not in dcs:
+            dcs.append(ip_value)
+    if pdc_ip and pdc_ip not in dcs:
+        dcs.insert(0, pdc_ip)
+    if not dcs and pdc_ip:
+        dcs = [pdc_ip]
+
+    dcs_hostnames: list[str] = []
+    for hostname in discovered_hosts:
+        short = hostname.split(".")[0].strip().lower()
+        if short and short not in dcs_hostnames:
+            dcs_hostnames.append(short)
+    if pdc_ip in dc_ip_to_hostname:
+        short = str(dc_ip_to_hostname[pdc_ip]).split(".")[0].strip().lower()
+        if short and short not in dcs_hostnames:
+            dcs_hostnames.insert(0, short)
+    if pdc_hostname:
+        short = str(pdc_hostname).split(".")[0].strip().lower()
+        if short and short not in dcs_hostnames:
+            dcs_hostnames.insert(0, short)
+
+    domain_data["dcs"] = dcs
+    if dcs_hostnames:
+        domain_data["dcs_hostnames"] = dcs_hostnames
+
+    if hasattr(shell, "dcs"):
+        try:
+            setattr(shell, "dcs", list(dcs))
+        except Exception:
+            pass
+
+    try:
+        workspace_dir = str(getattr(shell, "current_workspace_dir", "") or "")
+        domains_dir_name = str(getattr(shell, "domains_dir", "domains") or "domains")
+        if workspace_dir:
+            dcs_file = os.path.join(workspace_dir, domains_dir_name, domain, "dcs.txt")
+            os.makedirs(os.path.dirname(dcs_file), exist_ok=True)
+            with open(dcs_file, "w", encoding="utf-8") as handle:
+                for dc_ip in dcs:
+                    handle.write(f"{dc_ip}\n")
+            print_info_debug(
+                "[workspace_load] Updated dcs.txt: "
+                f"path={mark_sensitive(dcs_file, 'path')} "
+                f"entries={len(dcs)}"
+            )
+    except Exception as exc:
+        telemetry.capture_exception(exc)
+        print_info_debug(
+            f"[workspace_load] Failed writing dcs.txt for {mark_sensitive(domain, 'domain')}: {exc}"
+        )
+
+    print_info_debug(
+        "[workspace_load] Refreshed DC metadata: "
+        f"domain={mark_sensitive(domain, 'domain')} "
+        f"dcs_old={len(old_dcs)} dcs_new={len(dcs)} "
+        f"dcs_hostnames_old={len(old_hosts)} dcs_hostnames_new={len(dcs_hostnames)}"
+    )
+
+
+def _replace_ip_in_json_file(path: str, old_ip: str, new_ip: str) -> bool:
+    """Replace all occurrences of *old_ip* with *new_ip* inside a JSON file.
+
+    Returns True if at least one replacement was made.  Safe to call on
+    non-existent paths (returns False silently).
+    """
+    if not os.path.exists(path):
+        return False
+
+    def _walk(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(v) for v in obj]
+        if isinstance(obj, str):
+            return obj.replace(old_ip, new_ip)
+        return obj
+
+    with open(path, encoding="utf-8") as fh:
+        original = fh.read()
+    if old_ip not in original:
+        return False
+    data = json.loads(original)
+    patched = _walk(data)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(patched, fh, indent=2)
+    return True
+
+
+def _sync_tunnel_pivot_host_ip(
+    shell: Any,
+    *,
+    domain: str,
+    old_ip: str,
+    new_ip: str,
+) -> None:
+    """Propagate a PDC IP change across all workspace artifacts that reference it.
+
+    Called whenever a domain's PDC IP is confirmed to have changed (DNS repair
+    or normal resolution returning a different address).  Updates:
+
+    * Tunnel records (``tunnels_state.json``) — ``pivot_host`` field only;
+      hostname-based fields (``pivot_kerberos_spn_host``, etc.) are stable.
+    * Network reachability report — so the pivot reachability check finds the
+      host without needing a live TCP probe fallback.
+    * Pivot-runtime-state snapshot of the reachability report (if present).
+    """
+    old_ip = str(old_ip or "").strip()
+    new_ip = str(new_ip or "").strip()
+    if not old_ip or not new_ip or old_ip == new_ip:
+        return
+    workspace_dir = str(getattr(shell, "current_workspace_dir", "") or "").strip()
+    if not workspace_dir:
+        return
+    domains_dir = str(getattr(shell, "domains_dir", "domains") or "domains")
+    domain_root = os.path.join(workspace_dir, domains_dir, domain)
+
+    # ── 1. Tunnel records ────────────────────────────────────────────────────
+    try:
+        from adscan_internal.services.ligolo_service import LigoloProxyService
+
+        service = LigoloProxyService(workspace_dir=workspace_dir, current_domain=domain)
+        records = service.load_tunnels_state()
+        updated = 0
+        has_id_less = False
+        for record in records:
+            if str(record.get("domain") or "").strip().lower() != domain.lower():
+                continue
+            if str(record.get("pivot_host") or "").strip() != old_ip:
+                continue
+            tunnel_id = str(record.get("tunnel_id") or "").strip()
+            if tunnel_id:
+                service.update_tunnel_record(
+                    tunnel_id=tunnel_id,
+                    updates={"pivot_host": new_ip},
+                )
+            else:
+                record["pivot_host"] = new_ip
+                has_id_less = True
+            updated += 1
+        if has_id_less:
+            service.save_tunnels_state(records)
+        if updated:
+            print_info_debug(
+                f"[workspace_load] Updated {updated} tunnel record(s) for {mark_sensitive(domain, 'domain')}: "
+                f"pivot_host {mark_sensitive(old_ip, 'ip')} → {mark_sensitive(new_ip, 'ip')}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        telemetry.capture_exception(exc)
+        print_info_debug(
+            f"[workspace_load] Failed to sync tunnel pivot_host for {mark_sensitive(domain, 'domain')}: {exc}"
+        )
+
+    # ── 2. Reachability reports ──────────────────────────────────────────────
+    report_paths = [
+        os.path.join(domain_root, "network_reachability_report.json"),
+        os.path.join(
+            domain_root,
+            ".pivot_runtime_state",
+            "direct_vantage_snapshot",
+            "network_reachability_report.json",
+        ),
+    ]
+    for rpath in report_paths:
+        try:
+            if _replace_ip_in_json_file(rpath, old_ip, new_ip):
+                print_info_debug(
+                    f"[workspace_load] Updated IP in {mark_sensitive(os.path.basename(rpath), 'path')} "
+                    f"for {mark_sensitive(domain, 'domain')}: "
+                    f"{mark_sensitive(old_ip, 'ip')} → {mark_sensitive(new_ip, 'ip')}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            telemetry.capture_exception(exc)
+            print_info_debug(
+                f"[workspace_load] Failed to update IP in {mark_sensitive(rpath, 'path')}: {exc}"
+            )
+
+
+def _restore_saved_domain_dns_context(
+    shell: WorkspaceLoaderShell,
+    *,
+    domain: str,
+    pdc_ip: str,
+    pdc_hostname: str | None,
+) -> bool:
+    """Restore persisted DNS runtime state for a loaded workspace domain."""
+    from adscan_internal.cli.dns import is_domain_best_effort_mode
+
+    marked_domain = mark_sensitive(domain, "domain")
+    domain_data = shell.domains_data.setdefault(domain, {})
+
+    if is_domain_best_effort_mode(shell, domain):
+        print_info_debug(
+            "[workspace_load] Best-effort DNS mode active for "
+            f"{marked_domain}; skipping resolver reconfiguration"
+        )
+        domain_data["pdc"] = pdc_ip
+        if pdc_hostname:
+            domain_data["pdc_hostname"] = pdc_hostname
+        _refresh_domain_dc_metadata(
+            shell,
+            domain=domain,
+            pdc_ip=pdc_ip,
+            pdc_hostname=pdc_hostname,
+        )
+        _restore_hosts_entry_for_domain(
+            shell,
+            domain=domain,
+            pdc_ip=pdc_ip,
+            pdc_hostname=pdc_hostname,
+        )
+        _capture_workspace_dns_repair_event(
+            shell=shell,
+            event="workspace_dns_restore_best_effort",
+            result="restored",
+            reason="best_effort_mode",
+        )
+        return True
+
+    if shell.do_update_resolv_conf(f"{domain} {pdc_ip}"):
+        resolved_pdc_ip = str(getattr(shell, "pdc", "") or pdc_ip)
+        resolved_pdc_hostname = (
+            str(getattr(shell, "pdc_hostname", "") or "").strip() or pdc_hostname
+        )
+        domain_data["pdc"] = resolved_pdc_ip
+        if resolved_pdc_hostname:
+            domain_data["pdc_hostname"] = resolved_pdc_hostname
+        _refresh_domain_dc_metadata(
+            shell,
+            domain=domain,
+            pdc_ip=resolved_pdc_ip,
+            pdc_hostname=resolved_pdc_hostname,
+        )
+        _restore_hosts_entry_for_domain(
+            shell,
+            domain=domain,
+            pdc_ip=resolved_pdc_ip,
+            pdc_hostname=resolved_pdc_hostname,
+        )
+        _sync_tunnel_pivot_host_ip(
+            shell,
+            domain=domain,
+            old_ip=pdc_ip,
+            new_ip=resolved_pdc_ip,
+        )
+        return True
+
+    print_warning(f"Could not configure DNS for domain {marked_domain}")
+    _capture_workspace_dns_repair_event(
+        shell=shell,
+        event="workspace_dns_restore_failed",
+        result="failed",
+        reason="saved_mapping_unreachable",
+    )
+    _attempt_workspace_dns_repair_interactive(
+        shell,
+        domain=domain,
+        saved_pdc_ip=pdc_ip,
+        saved_pdc_hostname=pdc_hostname,
+    )
+    return False
+
+
+def _prompt_updated_dc_ip_for_workspace_domain(domain: str) -> str | None:
+    """Prompt for an updated DC/DNS IP while restoring a workspace."""
+    while True:
+        ip_input = Prompt.ask(
+            f"Enter updated DC/DNS IP for {mark_sensitive(domain, 'domain')}",
+            default="",
+        ).strip()
+        if not ip_input:
+            return None
+        try:
+            ipaddress.ip_address(ip_input)
+            return ip_input
+        except ValueError:
+            print_warning(
+                f"Invalid IP format: {mark_sensitive(ip_input, 'ip')}. Please enter a valid IPv4 address."
+            )
+
+
+def _build_workspace_dns_repair_network_context(shell: WorkspaceLoaderShell) -> str:
+    """Build a compact network-context block for the DNS repair panel.
+
+    Args:
+        shell: Workspace-aware shell with interface and myip attributes.
+
+    Returns:
+        Rich-formatted text summarizing the local interface and IP context.
+    """
+    interface = str(getattr(shell, "interface", "") or "").strip()
+    stored_myip = str(getattr(shell, "myip", "") or "").strip()
+    marked_interface = (
+        f"[bold cyan]{interface}[/bold cyan]" if interface else "[dim]unset[/dim]"
+    )
+    lines = [
+        "[bold]Workspace network context[/bold]",
+        f"Interface: {marked_interface}",
+    ]
+
+    if not interface:
+        lines.append(
+            "Current interface IP: [dim]unknown[/dim] (set an interface to validate routing)"
+        )
+        return "\n".join(lines)
+
+    try:
+        from adscan_internal.services.myip_staleness import detect_myip_staleness
+
+        staleness = detect_myip_staleness(
+            interface=interface, stored_ip=stored_myip or None
+        )
+    except Exception as exc:  # noqa: BLE001
+        telemetry.capture_exception(exc)
+        print_info_debug(f"[workspace_dns_repair] network context check failed: {exc}")
+        lines.append("Current interface IP: [dim]unknown[/dim] (probe failed)")
+        return "\n".join(lines)
+
+    current_ip = str(staleness.get("current_ip") or "").strip()
+    if current_ip:
+        marked_current_ip = mark_sensitive(current_ip, "ip")
+        if stored_myip and current_ip != stored_myip:
+            marked_stored_myip = mark_sensitive(stored_myip, "ip")
+            lines.append(f"Stored myip: {marked_stored_myip}")
+            lines.append(
+                f"Current interface IP: [bold green]{marked_current_ip}[/bold green] "
+                "[dim](changed since the workspace was saved)[/dim]"
+            )
+        else:
+            lines.append(f"Current interface IP: {marked_current_ip}")
+    elif staleness.get("no_ip_on_interface"):
+        if stored_myip:
+            marked_stored_myip = mark_sensitive(stored_myip, "ip")
+            lines.append(f"Stored myip: {marked_stored_myip}")
+        lines.append(
+            "Current interface IP: [dim]none[/dim] (VPN/tunnel may be disconnected)"
+        )
+    else:
+        if stored_myip:
+            marked_stored_myip = mark_sensitive(stored_myip, "ip")
+            lines.append(f"Stored myip: {marked_stored_myip}")
+        lines.append("Current interface IP: [dim]unknown[/dim]")
+
+    return "\n".join(lines)
+
+
+def _attempt_workspace_dns_repair_interactive(
+    shell: WorkspaceLoaderShell,
+    *,
+    domain: str,
+    saved_pdc_ip: str,
+    saved_pdc_hostname: str | None,
+) -> bool:
+    """Try interactive DNS repair for stale workspace domain/DC mappings."""
+    marked_domain = mark_sensitive(domain, "domain")
+    marked_saved_pdc = mark_sensitive(saved_pdc_ip, "ip")
+    _capture_workspace_dns_repair_event(
+        shell=shell,
+        event="workspace_dns_repair_attempted",
+        result="attempted",
+    )
+
+    if is_non_interactive(shell=shell):
+        print_warning(
+            f"DNS for {marked_domain} is not currently reachable "
+            f"(saved DC/DNS: {marked_saved_pdc})."
+        )
+        print_info(
+            "If the target changed, reconfigure later with:\n"
+            f"  update_resolv_conf {domain} <new_dc_ip>\n"
+            "Or run `start_unauth` to rediscover DC/PDC."
+        )
+        _capture_workspace_dns_repair_event(
+            shell=shell,
+            event="workspace_dns_repair_skipped",
+            result="skipped",
+            reason="non_interactive",
+        )
+        return False
+
+    network_context = _build_workspace_dns_repair_network_context(shell)
+    print_panel(
+        "[bold yellow]Workspace DNS mapping appears stale.[/bold yellow]\n\n"
+        f"Domain: {marked_domain}\n"
+        f"Saved DC/DNS IP: {marked_saved_pdc}\n\n"
+        "ADscan already retried the saved mapping during workspace load and it failed.\n"
+        "The next step is to provide a new DC/DNS IP if the lab/domain rotated.\n\n"
+        f"{network_context}\n\n"
+        "This is common in CTF labs where DC IPs rotate between sessions.\n"
+        "You can repair it now or skip (offline mode).\n",
+        title="[bold]🧭 Workspace DNS Repair[/bold]",
+        border_style="yellow",
+        padding=(1, 2),
+    )
+
+    if not Confirm.ask(
+        "Try to repair DNS mapping now? (recommended)",
+        default=True,
+    ):
+        print_warning(
+            f"Continuing without DNS repair for {marked_domain}. "
+            "Domain scans may fail until DNS is fixed."
+        )
+        _capture_workspace_dns_repair_event(
+            shell=shell,
+            event="workspace_dns_repair_skipped",
+            result="skipped",
+            reason="user_declined",
+        )
+        return False
+
+    try:
+        from adscan_internal.cli.dns import confirm_domain_pdc_mapping
+
+        def _on_reenter() -> tuple[str, str] | None:
+            updated_ip = _prompt_updated_dc_ip_for_workspace_domain(domain)
+            if not updated_ip:
+                return None
+            return domain, updated_ip
+
+        mapping = confirm_domain_pdc_mapping(
+            shell,
+            domain=domain,
+            candidate_ip=saved_pdc_ip,
+            interactive=True,
+            mode_label="workspace_load",
+            on_reenter=_on_reenter,
+            skip_initial_candidate=True,
+        )
+        if not mapping:
+            print_warning(
+                f"Skipping DNS repair for {marked_domain}. "
+                "You can continue working offline."
+            )
+            _capture_workspace_dns_repair_event(
+                shell=shell,
+                event="workspace_dns_repair_skipped",
+                result="skipped",
+                reason="preflight_fallback",
+            )
+            return False
+
+        _validated_domain, validated_pdc_ip = mapping
+        if not shell.do_update_resolv_conf(f"{domain} {validated_pdc_ip}"):
+            print_warning(
+                f"Could not repair DNS for {marked_domain} using "
+                f"{mark_sensitive(validated_pdc_ip, 'ip')}."
+            )
+            _capture_workspace_dns_repair_event(
+                shell=shell,
+                event="workspace_dns_repair_failed",
+                result="failed",
+                reason="update_resolv_conf_failed",
+            )
+            return False
+
+        resolved_hostname = (shell.pdc_hostname or "").strip() or saved_pdc_hostname
+        shell.domains_data.setdefault(domain, {})["pdc"] = validated_pdc_ip
+        if resolved_hostname:
+            shell.domains_data.setdefault(domain, {})["pdc_hostname"] = (
+                resolved_hostname
+            )
+        _refresh_domain_dc_metadata(
+            shell,
+            domain=domain,
+            pdc_ip=validated_pdc_ip,
+            pdc_hostname=resolved_hostname,
+        )
+        _restore_hosts_entry_for_domain(
+            shell,
+            domain=domain,
+            pdc_ip=validated_pdc_ip,
+            pdc_hostname=resolved_hostname,
+        )
+        _sync_tunnel_pivot_host_ip(
+            shell,
+            domain=domain,
+            old_ip=saved_pdc_ip,
+            new_ip=validated_pdc_ip,
+        )
+        print_success(f"Workspace DNS repaired for {marked_domain}.")
+        _capture_workspace_dns_repair_event(
+            shell=shell,
+            event="workspace_dns_repair_succeeded",
+            result="succeeded",
+            pdc_changed=(validated_pdc_ip != saved_pdc_ip),
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        telemetry.capture_exception(exc)
+        print_warning(
+            f"Interactive DNS repair failed for {marked_domain}. "
+            "Continuing without blocking workspace load."
+        )
+        print_info_debug(f"[workspace_load] DNS repair exception: {exc}")
+        _capture_workspace_dns_repair_event(
+            shell=shell,
+            event="workspace_dns_repair_failed",
+            result="failed",
+            reason=f"exception:{type(exc).__name__}",
+        )
+        return False
+
+
+def _pdc_directly_reachable(pdc_ip: str) -> bool:
+    """True when the PDC IP answers a DC service port from the current vantage.
+
+    Probes the IP directly (445/389/88), never the hostname, so it is
+    DNS-independent and safe to call during workspace-load classification —
+    before any per-domain DNS / ``/etc/hosts`` is configured.
+
+    Used to decide whether a domain whose PDC nominally falls within an
+    *inactive* Ligolo route is genuinely reachable only through that tunnel
+    (defer its DNS) or is in fact directly reachable (do NOT defer).  Deferring
+    a directly-reachable DC deadlocks the pivot relaunch: the Phase-2 relaunch
+    probe resolves the DC hostname (``asyncio.open_connection``), which fails
+    while the DC's DNS sits deferred in Phase 3 — the relaunch then blocks on
+    the very DC that was reachable all along.
+    """
+    try:
+        from adscan_internal.services.async_bridge import run_async_sync  # noqa: PLC0415
+        from adscan_internal.services.network_probe_service import (  # noqa: PLC0415
+            tcp_probe_multi,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        probe = run_async_sync(tcp_probe_multi(pdc_ip, [445, 389, 88], timeout=2.0))
+    except Exception as exc:  # noqa: BLE001
+        telemetry.capture_exception(exc)
+        return False
+    return getattr(probe, "status", "") == "open"
+
+
+def _classify_workspace_pivot_domains(
+    shell: Any,
+    *,
+    workspace_path: str,
+    reconciliation_results: list[Any],
+) -> tuple[set[str], set[str]]:
+    """Return ``(relaunch_domains, pivot_dns_domains)``.
+
+    ``relaunch_domains``  — domains for which a pivot relaunch should be offered
+                           (Phase 2).  These are the domains that own the WinRM
+                           or MSSQL credential used to reach the pivot host.
+
+    ``pivot_dns_domains`` — domains whose PDC IP is only reachable through an
+                           active Ligolo tunnel (Phase 3 DNS).  e.g. pong.htb
+                           when 192.168.2.2 is behind the Ligolo routes.
+
+    The classification uses two independent signals so it is robust against the
+    case where ``network_vantage.mode`` was already persisted as ``"direct"``
+    from a previous session's reconciliation (losing the pivot history):
+
+    1. Live reconciliation results (stale pivot detected in *this* session).
+    2. Persisted tunnel records — if a record exists and Ligolo is currently
+       down, the domain still needs a relaunch regardless of persisted mode.
+       Domains whose PDC IP falls within any inactive tunnel's routes are
+       classified as pivot-DNS-dependent.
+    """
+    # Seed from live reconciliation (most authoritative signal).
+    relaunch_domains: set[str] = {
+        result.domain
+        for result in reconciliation_results
+        if result.restored_direct_vantage
+    }
+    pivot_dns_domains: set[str] = set(relaunch_domains)
+
+    try:
+        from adscan_internal.services.pivot_relaunch_service import (
+            list_relaunch_candidates,
+        )
+        from adscan_internal.services.pivot_runtime_state_service import (
+            has_active_ligolo_tunnel_for_domain,
+        )
+
+        candidates = list_relaunch_candidates(shell)
+        inactive_routes: list[ipaddress.IPv4Network] = []
+
+        for candidate in candidates:
+            try:
+                tunnel_active = has_active_ligolo_tunnel_for_domain(
+                    workspace_dir=workspace_path,
+                    domain=candidate.domain,
+                )
+            except Exception:  # noqa: BLE001
+                # Connection refused / API unreachable → Ligolo is not running.
+                tunnel_active = False
+            if tunnel_active:
+                continue
+            # Tunnel record exists but Ligolo is not running — relaunch needed.
+            relaunch_domains.add(candidate.domain)
+            for route_str in candidate.routes:
+                try:
+                    inactive_routes.append(
+                        ipaddress.IPv4Network(route_str, strict=False)
+                    )
+                except ValueError:
+                    pass
+
+        # Any domain whose PDC IP falls inside an inactive tunnel's routed
+        # subnets is only reachable through that tunnel → defer its DNS.
+        if inactive_routes:
+            domains_data = getattr(shell, "domains_data", {}) or {}
+            for domain_name, domain_info in domains_data.items():
+                if not isinstance(domain_info, dict):
+                    continue
+                pdc_str = str(domain_info.get("pdc") or "").strip()
+                if not pdc_str:
+                    continue
+                try:
+                    pdc_addr = ipaddress.IPv4Address(pdc_str)
+                except ValueError:
+                    continue
+                if any(pdc_addr in route for route in inactive_routes):
+                    pivot_dns_domains.add(domain_name)
+
+        # A domain whose PDC is DIRECTLY reachable from the current vantage must
+        # NOT have its DNS deferred — whether it was seeded from reconciliation
+        # (restored_direct_vantage) or matched an inactive route above.  Deferring
+        # a directly-reachable DC deadlocks the pivot relaunch: the Phase-2 probe
+        # resolves the DC hostname while its DNS sits deferred in Phase 3, so the
+        # relaunch blocks on a DC that was reachable all along (self-heals only by
+        # accident on the next session).  Probe by IP so this is DNS-independent.
+        if pivot_dns_domains:
+            domains_data = getattr(shell, "domains_data", {}) or {}
+            for domain_name in sorted(pivot_dns_domains):
+                info = domains_data.get(domain_name)
+                pdc_str = (
+                    str(info.get("pdc") or "").strip()
+                    if isinstance(info, dict)
+                    else ""
+                )
+                if pdc_str and _pdc_directly_reachable(pdc_str):
+                    pivot_dns_domains.discard(domain_name)
+                    print_info_debug(
+                        "[workspace_load] PDC "
+                        f"{mark_sensitive(pdc_str, 'ip')} for "
+                        f"{mark_sensitive(domain_name, 'domain')} is directly "
+                        "reachable; not deferring its DNS (avoids pivot-relaunch "
+                        "DNS deadlock)."
+                    )
+
+        if relaunch_domains or pivot_dns_domains:
+            print_info_debug(
+                "[workspace_load] pivot classification: "
+                f"relaunch={sorted(relaunch_domains)} "
+                f"pivot_dns={sorted(pivot_dns_domains)}"
+            )
+
+    except Exception as exc:  # noqa: BLE001
+        telemetry.capture_exception(exc)
+        print_info_debug(f"[workspace_load] pivot domain classification failed: {exc}")
+
+    return relaunch_domains, pivot_dns_domains
+
+
+def load_workspace_data(shell: WorkspaceLoaderShell, workspace_path: str) -> None:
+    """Load workspace data (variables and credentials) from JSON files.
+
+    This function:
+    1. Cleans NetExec workspaces to avoid schema mismatches
+    2. Changes directory context to the workspace
+    3. Updates workspace-specific logging
+    4. Loads variables from variables.json
+    5. Applies variables to the shell instance
+    6. Updates telemetry context
+    7. Cleans and reconfigures DNS for loaded domains
+
+    Args:
+        shell: CLI shell instance that implements WorkspaceLoaderShell protocol
+        workspace_path: Absolute path to the workspace directory
+    """
+    # Clean NetExec workspaces to avoid schema mismatch errors
+    shell._clean_netexec_workspaces(use_sudo_if_needed=False)
+
+    print_info(f"Loading workspace data from: {workspace_path}")
+    shell.do_cd(workspace_path)  # Change current directory context if necessary
+
+    # Update logging to include workspace-specific log file
+    try:
+        update_workspace_logging(Path(workspace_path))
+        print_info_verbose(
+            f"Workspace logging enabled: {workspace_path}/logs/adscan.log"
+        )
+    except Exception as e:
+        # Don't fail workspace loading if logging update fails
+        print_info_debug(f"Failed to update workspace logging: {e}")
+
+    variables_file = os.path.join(workspace_path, "variables.json")
+    loaded_successfully = True
+
+    # Load variables
+    try:
+        variables = (
+            read_json_file(variables_file) if os.path.exists(variables_file) else None
+        )
+        if variables is not None:
+            # The workspace identity is ACTIVATION-OWNED, not variables-owned:
+            # activate_workspace() (and every caller of this loader) sets
+            # shell.current_workspace / current_workspace_dir to the authoritative
+            # filesystem identity BEFORE we run. A corrupt/empty/key-absent
+            # variables.json must NEVER override that identity — otherwise
+            # apply_workspace_variables_to_shell() resets both to their None
+            # default (the key is missing from the recovered ``{}``), which the
+            # ``while not shell.current_workspace`` guard in start.py misreads as a
+            # cancelled workspace selection and bricks an existing workspace in a
+            # false "cancelled" loop. Capture the activated identity and re-assert
+            # it after applying variables so corrupt, absent, or stale values can
+            # never win. (``workspace_path`` is deliberately NOT used as the source
+            # here: this loader is also invoked with a DOMAIN directory, so its
+            # basename is not reliably the workspace name.)
+            activation_current_workspace = getattr(shell, "current_workspace", None)
+            activation_current_workspace_dir = getattr(
+                shell, "current_workspace_dir", None
+            )
+
+            apply_workspace_variables_to_shell(shell, variables)
+
+            if activation_current_workspace:
+                shell.current_workspace = activation_current_workspace
+            if activation_current_workspace_dir:
+                shell.current_workspace_dir = activation_current_workspace_dir
+
+            # Infer lab from workspace name, backfilling inference metadata
+            # even for existing workspaces that already have lab_provider set.
+            _apply_workspace_name_inference(shell)
+
+            # Update telemetry context
+            telemetry_context = build_telemetry_context(
+                shell=shell,
+                trigger="workspace_load",
+            )
+            telemetry.set_cli_telemetry(
+                shell.telemetry, context=telemetry_context
+            )  # CLI override set; no identify here
+
+            # Provide known domains to telemetry sanitization for robust filtering.
+            domain_candidates: list[str] = []
+            if shell.domain:
+                domain_candidates.append(shell.domain)
+            if shell.domains:
+                domain_candidates.extend(shell.domains)
+            if shell.domains_data:
+                domain_candidates.extend(shell.domains_data.keys())
+            telemetry.set_workspace_domains(domain_candidates)
+            try:
+                enabled_hosts_path = os.path.join(
+                    workspace_path, "enabled_computers.txt"
+                )
+                host_candidates: list[str] = []
+                if os.path.exists(enabled_hosts_path):
+                    with open(enabled_hosts_path, "r", encoding="utf-8") as handle:
+                        for line in handle:
+                            value = line.strip()
+                            if value:
+                                host_candidates.append(value)
+                telemetry.set_workspace_hostnames(host_candidates)
+            except Exception:
+                telemetry.set_workspace_hostnames([])
+            try:
+                user_candidates: list[str] = []
+                password_candidates: list[str] = []
+                hostname_candidates: list[str] = []
+                base_dn_candidates: list[str] = []
+                netbios_candidates: list[str] = []
+                domains_dir = os.path.join(workspace_path, "domains")
+                for domain in domain_candidates:
+                    users_path = os.path.join(domains_dir, domain, "enabled_users.txt")
+                    if not os.path.exists(users_path):
+                        continue
+                    with open(users_path, "r", encoding="utf-8") as handle:
+                        for line in handle:
+                            value = line.strip()
+                            if value:
+                                user_candidates.append(value)
+                if shell.domains_data:
+                    for domain_data in shell.domains_data.values():
+                        if not isinstance(domain_data, dict):
+                            continue
+                        username = domain_data.get("username")
+                        if isinstance(username, str) and username:
+                            user_candidates.append(username)
+                        creds = domain_data.get("credentials")
+                        if isinstance(creds, dict):
+                            for user_key, pwd_value in creds.items():
+                                if isinstance(user_key, str) and user_key:
+                                    user_candidates.append(user_key)
+                                if isinstance(pwd_value, str) and pwd_value:
+                                    password_candidates.append(pwd_value)
+                        password_value = domain_data.get("password")
+                        if isinstance(password_value, str) and password_value:
+                            password_candidates.append(password_value)
+                        pdc_hostname = domain_data.get("pdc_hostname")
+                        if isinstance(pdc_hostname, str) and pdc_hostname:
+                            hostname_candidates.append(pdc_hostname)
+                        dcs_hostnames = domain_data.get("dcs_hostnames")
+                        if isinstance(dcs_hostnames, list):
+                            for host in dcs_hostnames:
+                                if isinstance(host, str) and host:
+                                    hostname_candidates.append(host)
+                        base_dn = domain_data.get("base_dn")
+                        if isinstance(base_dn, str) and base_dn:
+                            base_dn_candidates.append(base_dn)
+                        netbios = domain_data.get("netbios")
+                        if isinstance(netbios, str) and netbios:
+                            netbios_candidates.append(netbios)
+                if isinstance(shell.variables, dict):
+                    base_dn = shell.variables.get("base_dn")
+                    if isinstance(base_dn, str) and base_dn:
+                        base_dn_candidates.append(base_dn)
+                spraying_history = (
+                    shell.variables.get("password_spraying_history")
+                    if isinstance(shell.variables, dict)
+                    else None
+                )
+                if isinstance(spraying_history, dict):
+                    for domain_hist in spraying_history.values():
+                        if not isinstance(domain_hist, dict):
+                            continue
+                        for user_passwords in domain_hist.values():
+                            if not isinstance(user_passwords, dict):
+                                continue
+                            for pwd in user_passwords.keys():
+                                if isinstance(pwd, str) and pwd:
+                                    password_candidates.append(pwd)
+                telemetry.set_workspace_users(user_candidates)
+                telemetry.set_workspace_passwords(password_candidates)
+                telemetry.set_workspace_base_dns(base_dn_candidates)
+                telemetry.set_workspace_netbios(netbios_candidates)
+                if hostname_candidates:
+                    telemetry.set_workspace_hostnames(
+                        host_candidates + hostname_candidates
+                    )
+            except Exception:
+                telemetry.set_workspace_users([])
+                telemetry.set_workspace_passwords([])
+                telemetry.set_workspace_base_dns([])
+                telemetry.set_workspace_netbios([])
+
+            domains_data = variables.get("domains_data")
+            if isinstance(domains_data, dict):
+                for domain_data in domains_data.values():
+                    if isinstance(domain_data, dict):
+                        domain_data.pop("credential_previews", None)
+
+            shell.variables = variables  # Store all loaded variables
+            print_info(f"Variables loaded from {variables_file}")
+
+            try:
+                from adscan_internal.services.pivot_runtime_state_service import (
+                    reconcile_workspace_pivot_runtime_state,
+                )
+
+                reconciliation_results = reconcile_workspace_pivot_runtime_state(
+                    shell,
+                    workspace_dir=workspace_path,
+                )
+            except Exception as exc:  # noqa: BLE001
+                telemetry.capture_exception(exc)
+                print_info_debug(
+                    f"[workspace_load] pivot runtime reconciliation failed: {exc}"
+                )
+                reconciliation_results = []
+
+            # Refresh attack-graph step support classification for this ADscan version.
+            try:
+                from adscan_internal.services.attack_graph_service import (
+                    refresh_attack_graph_execution_support,
+                )
+
+                start = time.monotonic()
+                total_changed = 0
+                totals: dict[str, int] = {
+                    "to_blocked": 0,
+                    "to_unsupported": 0,
+                    "to_discovered": 0,
+                }
+                if shell.domains_data:
+                    for domain_name in list(shell.domains_data.keys()):
+                        counts = refresh_attack_graph_execution_support(
+                            shell, domain_name
+                        )
+                        total_changed += int(counts.get("changed", 0))
+                        for key in list(totals.keys()):
+                            totals[key] += int(counts.get(key, 0))
+                elapsed = round(time.monotonic() - start, 3)
+                if total_changed:
+                    print_info_debug(
+                        "[attack-graph] Refreshed edge execution support: "
+                        f"changed={total_changed}, "
+                        f"blocked={totals['to_blocked']}, "
+                        f"unsupported={totals['to_unsupported']}, "
+                        f"discovered={totals['to_discovered']}, "
+                        f"elapsed_s={elapsed}"
+                    )
+                else:
+                    print_info_debug(
+                        f"[attack-graph] Edge execution support up-to-date (elapsed_s={elapsed})."
+                    )
+            except Exception as exc:  # pragma: no cover - best effort
+                print_info_debug(
+                    f"[attack-graph] Refresh failed: {type(exc).__name__}: {exc}"
+                )
+
+            # Clean DNS entries for loaded domains to ensure clean state
+            # This prevents stale entries from previous sessions with different IPs
+            domains_to_clean = []
+            if shell.domain:
+                domains_to_clean.append(shell.domain)
+            if shell.domains:
+                domains_to_clean.extend(shell.domains)
+
+            # Also check domains_data for additional domains
+            if shell.domains_data:
+                for domain_name in shell.domains_data.keys():
+                    if domain_name not in domains_to_clean:
+                        domains_to_clean.append(domain_name)
+
+            # Clean entries for all domains found in workspace
+            if domains_to_clean:
+                for domain_to_clean in domains_to_clean:
+                    shell._clean_domain_entries(domain_to_clean)
+
+            # Restore unified krb5.conf if present in the workspace root.
+            krb5_conf_path = os.path.join(workspace_path, "krb5.conf")
+            if os.path.exists(krb5_conf_path):
+                os.environ["KRB5_CONFIG"] = krb5_conf_path
+                marked_krb5 = mark_sensitive(krb5_conf_path, "path")
+                print_info_debug(
+                    f"Restored KRB5_CONFIG from workspace krb5.conf: {marked_krb5}"
+                )
+
+            # DNS restore uses a 3-phase strategy to handle pivot-dependent domains
+            # robustly even when the primary domain IP has rotated:
+            #
+            #   Phase 1 — DNS for directly reachable domains (e.g. ping.htb).
+            #             Configured (and interactively repaired) without any tunnel.
+            #             Kerberos auth for the pivot relaunch depends on these first.
+            #
+            #   Phase 2 — Pivot relaunch.
+            #             Primary DNS is now correct; WinRM+Kerberos can authenticate.
+            #             Offered for any domain with a persisted tunnel record that is
+            #             currently inactive — regardless of network_vantage.mode.
+            #
+            #   Phase 3 — DNS for pivot-dependent domains (e.g. pong.htb).
+            #             Only reachable through the Ligolo tunnel from Phase 2.
+
+            relaunch_domains, pivot_dns_domains = _classify_workspace_pivot_domains(
+                shell,
+                workspace_path=workspace_path,
+                reconciliation_results=reconciliation_results,
+            )
+
+            # Collect all domains with a stored PDC IP and split by reachability.
+            direct_domains: list[dict] = []
+            pivot_domains: list[dict] = []
+
+            if shell.domains_data:
+                for domain_name, domain_info in shell.domains_data.items():
+                    if not domain_info.get("pdc"):
+                        continue
+                    entry = {
+                        "domain": domain_name,
+                        "pdc": domain_info.get("pdc"),
+                        "pdc_hostname": domain_info.get("pdc_hostname"),
+                    }
+                    if domain_name in pivot_dns_domains:
+                        pivot_domains.append(entry)
+                    else:
+                        direct_domains.append(entry)
+            else:
+                print_warning_verbose(
+                    "No domains_data found in workspace variables; skipping DNS reconfiguration."
+                )
+
+            # ── Phase 1: DNS for directly reachable domains ──────────────────────
+            if pivot_dns_domains:
+                print_info_debug(
+                    "[workspace_load] DNS phase 1: configuring direct domains; "
+                    f"pivot-dependent deferred: {sorted(pivot_dns_domains)}"
+                )
+            for domain_info in direct_domains:
+                _restore_saved_domain_dns_context(
+                    shell,
+                    domain=domain_info["domain"],
+                    pdc_ip=domain_info["pdc"],
+                    pdc_hostname=domain_info.get("pdc_hostname"),
+                )
+
+            # ── Phase 2: Pivot relaunch ───────────────────────────────────────────
+            # Uses relaunch_domains (tunnel-record-based), NOT pivot_dns_domains.
+            # This correctly handles the case where network_vantage.mode was already
+            # reset to "direct" from a previous session's reconciliation save.
+            if relaunch_domains:
+                print_info_debug(
+                    "[workspace_load] DNS phase 2: offering pivot relaunch for: "
+                    f"{sorted(relaunch_domains)}"
+                )
+            try:
+                from adscan_internal.services.pivot_relaunch_service import (
+                    maybe_offer_previous_pivot_relaunch,
+                )
+
+                interactive_relaunch = not bool(getattr(shell, "auto", False))
+                for domain in sorted(relaunch_domains):
+                    maybe_offer_previous_pivot_relaunch(
+                        shell,
+                        domain=domain,
+                        interactive=interactive_relaunch,
+                        trigger="workspace_load",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                telemetry.capture_exception(exc)
+                print_info_debug(f"[workspace_load] pivot relaunch offer failed: {exc}")
+
+            # ── Phase 3: DNS for pivot-dependent domains ─────────────────────────
+            # Tunnel is now up (or user declined). Attempt DNS regardless — if the
+            # tunnel is still down, the repair flow will prompt as usual.
+            if pivot_domains:
+                print_info_debug(
+                    "[workspace_load] DNS phase 3: configuring pivot-dependent domains"
+                )
+            for domain_info in pivot_domains:
+                _restore_saved_domain_dns_context(
+                    shell,
+                    domain=domain_info["domain"],
+                    pdc_ip=domain_info["pdc"],
+                    pdc_hostname=domain_info.get("pdc_hostname"),
+                )
+
+            # Check whether the stored myip is still valid on the configured
+            # interface.  DHCP may have assigned a new IP after a reboot or
+            # VPN reconnect, causing reverse-connection operations to silently
+            # fail.  This surfaces the change immediately and auto-corrects it.
+            try:
+                from adscan_internal.services.myip_staleness import (
+                    check_and_refresh_myip,
+                )
+
+                check_and_refresh_myip(shell, context="workspace load")
+            except Exception as _myip_exc:
+                print_info_debug(
+                    f"[workspace_load] myip staleness check failed: {_myip_exc}"
+                )
+
+            try:
+                from adscan_internal.services.current_vantage_inventory_refresh_service import (
+                    maybe_offer_workspace_current_vantage_refresh,
+                )
+
+                maybe_offer_workspace_current_vantage_refresh(
+                    shell,
+                    trigger="workspace_load",
+                )
+            except Exception as exc:  # noqa: BLE001
+                telemetry.capture_exception(exc)
+                print_info_debug(
+                    f"[workspace_load] current-vantage refresh offer failed: {exc}"
+                )
+
+        else:
+            print_warning(
+                f"Variables file not found: {variables_file}. Using defaults."
+            )
+            shell.variables = {}
+    except json.JSONDecodeError as e:
+        telemetry.capture_exception(e)
+        print_error(f"Error decoding JSON from {variables_file}.")
+        print_exception(show_locals=False, exception=e)
+        loaded_successfully = False
+    except OSError as e:
+        telemetry.capture_exception(e)
+        print_error(f"OS error reading {variables_file}.")
+        print_exception(show_locals=False, exception=e)
+        loaded_successfully = False
+    except Exception as e:
+        telemetry.capture_exception(e)
+        print_error(f"Unexpected error loading variables from {variables_file}: {e}")
+        print_exception(show_locals=False, exception=e)
+        loaded_successfully = False
+
+    if loaded_successfully:
+        print_success(f"Workspace data successfully processed for {workspace_path}")
+        # Auto-surface the crash-resume offer: if this workspace holds a scan that
+        # was interrupted mid-phase, offer to continue it from where it stopped
+        # (interactive only; gated off + idempotent under ``adscan ci``). Best
+        # effort — never let the offer break workspace loading.
+        try:
+            from adscan_internal.cli.workspace_resume_offer import (
+                maybe_offer_incomplete_scan_resume,
+            )
+
+            maybe_offer_incomplete_scan_resume(shell)
+        except Exception as exc:  # noqa: BLE001
+            telemetry.capture_exception(exc)
+            print_info_debug(f"[workspace_load] incomplete-scan resume offer failed: {exc}")
+    else:
+        print_error(
+            f"Failed to fully load workspace data from {workspace_path}. Check errors above."
+        )
+
+
+def load_workspace_variables(variables_file: str) -> dict[str, Any] | None:
+    """Load workspace variables from a variables.json path.
+
+    Args:
+        variables_file: Absolute path to a workspace-level variables.json file.
+
+    Returns:
+        Parsed dict if the file exists, otherwise None.
+
+    Raises:
+        OSError: On filesystem errors while reading.
+        json.JSONDecodeError: If the JSON is malformed.
+    """
+    if not os.path.exists(variables_file):
+        return None
+    return read_json_file(variables_file)
+
+
+def apply_loaded_workspace_variables(shell: Any, variables: dict[str, Any]) -> None:  # type: ignore[type-arg]
+    """Apply loaded variables to the CLI shell instance."""
+    apply_workspace_variables_to_shell(shell, variables)
+
+
+__all__ = [
+    "apply_loaded_workspace_variables",
+    "load_workspace_data",
+    "load_workspace_variables",
+    "WorkspaceLoaderShell",
+]

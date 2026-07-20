@@ -1,0 +1,23 @@
+{
+  "n_threads": 5,
+  "n_packets": 50,
+  "logging": {
+    "level": "INFO",
+    "file_enabled": true,
+    "console_enabled": true
+  },
+  "attacks": {
+    "syn_flood": {
+      "default_port": 80,
+      "payload_size": 1024
+    },
+    "ping_flood": {
+      "payload_size": 65000,
+      "interval": 0.001
+    },
+    "arp_spoof": {
+      "interval": 1.0,
+      "restore_count": 5
+    }
+  }
+}

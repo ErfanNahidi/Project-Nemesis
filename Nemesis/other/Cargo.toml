@@ -1,0 +1,67 @@
+[package]
+name = "aydee"
+version = "2.1.0"
+edition = "2021"
+description = "Active Directory enumeration and reconnaissance toolkit"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/kyakei/AyDee"
+homepage = "https://github.com/kyakei/AyDee"
+keywords = ["active-directory", "ldap", "kerberos", "bloodhound", "pentest"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# LDAP
+ldap3 = { version = "0.11", default-features = false, features = ["tls-rustls"] }
+
+# DNS
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto (GPP decryption)
+aes = "0.8"
+cbc = "0.1"
+base64 = "0.22"
+
+# Archive
+zip = "2"
+
+# Terminal UI
+colored = "2"
+indicatif = { version = "0.17", features = ["tokio"] }
+comfy-table = "7"
+dialoguer = "0.11"
+console = "0.15"
+
+# Auth
+rpassword = "7"
+
+# Error handling
+anyhow = "1"
+
+# Time
+chrono = "0.4"
+
+# System
+libc = "0.2"
+
+# Misc
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1

@@ -1,0 +1,11 @@
+2026-07-20 11:57:20,608 - ping_flood - INFO - Iniciando Ping Flood contra 192.168.200.2
+2026-07-20 11:57:26,250 - ping_flood - INFO - Paquetes enviados: 100, Velocidad: 17.72 paquetes/segundo
+2026-07-20 11:57:31,664 - ping_flood - INFO - Paquetes enviados: 200, Velocidad: 18.09 paquetes/segundo
+2026-07-20 11:57:37,221 - ping_flood - INFO - Paquetes enviados: 300, Velocidad: 18.06 paquetes/segundo
+2026-07-20 11:57:42,798 - ping_flood - INFO - Paquetes enviados: 400, Velocidad: 18.03 paquetes/segundo
+2026-07-20 11:57:48,319 - ping_flood - INFO - Paquetes enviados: 500, Velocidad: 18.04 paquetes/segundo
+2026-07-20 11:57:53,782 - ping_flood - INFO - Paquetes enviados: 600, Velocidad: 18.09 paquetes/segundo
+2026-07-20 11:57:59,491 - ping_flood - INFO - Paquetes enviados: 700, Velocidad: 18.00 paquetes/segundo
+2026-07-20 11:58:05,132 - ping_flood - INFO - Paquetes enviados: 800, Velocidad: 17.97 paquetes/segundo
+2026-07-20 11:58:10,637 - ping_flood - INFO - Paquetes enviados: 900, Velocidad: 17.99 paquetes/segundo
+2026-07-20 11:58:14,915 - ping_flood - INFO - Ataque detenido. Total de paquetes enviados: 979

@@ -1,0 +1,178 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adscan"
+version = "10.0.0"
+description = "Free Active Directory pentesting CLI for AD enumeration, attack paths, Kerberoasting, AS-REP roasting, ADCS, DCSync, password spraying, and CTF labs."
+readme = "README.md"
+authors = [{ name = "ADscan" }]
+requires-python = ">=3.9"
+keywords = [
+    "active-directory",
+    "activedirectory",
+    "pentesting",
+    "penetration-testing",
+    "enumeration",
+    "kerberoasting",
+    "as-rep-roasting",
+    "adcs",
+    "dcsync",
+    "password-spraying",
+    "red-team",
+    "ctf",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "rich>=13.0,<16.0",
+    "requests>=2.31.0,<3.0",
+    "packaging>=23.0,<27.0",
+    "certifi>=2023.0.0",
+    "credsweeper==1.15.1; python_version >= '3.10'",
+    "sentry-sdk>=1.40.0,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # badauth + asysocks are foundational to the native stack (badauth: NTLM/
+    # SPNEGO/credential primitives consumed by aiosmb/badldap/aardwolf/kerbad;
+    # asysocks: the async network layer). They are declared here as DIRECT deps
+    # — not just transitively via their consumers — so the vendor path overrides
+    # in [tool.uv.sources] actually take effect. uv only applies a source
+    # override to a package the project directly depends on; without these two
+    # lines uv resolved badauth/asysocks from PyPI, so the LOCALLY_MAINTAINED
+    # vendor/ patches (e.g. the NetNTLMv1-downgrade crack fix in badauth) were
+    # dead in the uv-managed venv + CI even though production Docker installs
+    # vendor/ directly. Keep in lockstep with the [cli] extra.
+    "badauth>=0.1.6",
+    "asysocks>=0.2.18",
+    "badldap>=0.7.5,<0.8",
+    "kerbad>=0.5.9",
+    "impacket==0.13.1",
+    "pytest>=8.0,<9.0",
+    # pytest-timeout converts hung tests into explicit failures with a
+    # stack trace at the deadline instead of letting them stall CI for
+    # hours. Configured in pytest.ini with a 60s default per test plus
+    # ``thread`` method so the timeout works regardless of whether the
+    # test is blocked on Python or in a C-level call.
+    "pytest-timeout>=2.3,<3.0",
+    "PyYAML>=6.0,<7.0",
+    "ruff>=0.9.0,<1.0",
+    "build>=1.2.0,<2.0",
+    "twine>=6.0.0,<7.0",
+    "mypy>=1.8.0",
+    "types-requests",
+    "pytest-html",
+    "jinja2",
+    "winacl==0.1.9",
+    # Pure-Python forensic stack for offline VM disk-image credential extraction
+    # (vm_artifact_service): dissect.target follows VMware sparse / Hyper-V VHDX
+    # chains and walks NTFS in userspace (no root, no mount, no subprocess).
+    "dissect.target>=3.20,<4.0",
+    # Offline VM MEMORY-image credential extraction (vm_artifact_service): Volatility 3
+    # carves raw guest RAM (.vmem/.vmrs) for SAM/LSA/cached creds. pycryptodome is
+    # REQUIRED or vol3's credential plugins silently fail to register.
+    "volatility3>=2.5.0",
+    "pycryptodome>=3.20",
+]
+cli = [
+    # Direct declarations so the vendor/ path overrides in [tool.uv.sources]
+    # take effect for the native stack's foundational libs (see the [dev] note).
+    "badauth>=0.1.6",
+    "asysocks>=0.2.18",
+    "badldap>=0.7.5,<0.8",
+    "kerbad>=0.5.9",
+    "impacket==0.13.1",
+    "aiosmb>=0.4.9",
+    "aardwolf>=0.2.13",
+    "pypykatz>=0.6.10",
+    "psutil",
+    "python-docx",
+    "playwright==1.60.0",
+    "jinja2>=3.0",
+    "graphviz>=0.20",
+    "python-magic>=0.4.27,<0.5; platform_system == 'Linux'",
+    "markitdown>=0.1.5,<0.2; python_version >= '3.10'",
+    "dnspython>=2.7.0,<3.0",
+    # `pydantic-ai-slim` (not full `pydantic-ai`, which drags xai-sdk and pins
+    # `packaging<26` — incompatible with packaging>=26 needed elsewhere). Only
+    # the three provider extras the code can actually reach are installed: the
+    # `AIProvider` enum (services/llm/config.py) routes to openai:/anthropic:/
+    # google-gla: model strings (OLLAMA + OPENAI_COMPATIBLE also go via openai);
+    # the *_CLI providers are external subprocesses, not pydantic-ai extras. The
+    # other provider SDKs (bedrock/vertexai/huggingface/cohere/groq/mistral/…)
+    # are unreachable and were dropped to shrink the image. Add an extra here if
+    # a new AIProvider that needs it is introduced.
+    "pydantic-ai-slim[anthropic,google,openai]>=0.8.1",
+    "netifaces",
+    "scapy>=2.5.0,<3.0",
+    "prompt_toolkit",
+    "questionary",
+    "pypsrp[kerberos]==0.8.1; python_version < '3.10'",
+    "pypsrp[kerberos]==0.9.0; python_version >= '3.10'",
+    "pydantic-settings>=2.4.0",
+    "selenium>=4.28.0,<5.0",
+    "textual>=0.80.0",
+    "redis>=5.0.0,<7.1.0",
+    "winacl==0.1.9",
+    # Offline VM disk-image credential extraction (vm_artifact_service): dissect
+    # reads VMware/Hyper-V disk-image containers + NTFS in pure Python (userspace,
+    # no root/mount/subprocess) to pull ntds.dit + registry hives out of a guest.
+    "dissect.target>=3.20,<4.0",
+    # Offline VM MEMORY-image credential extraction (vm_artifact_service): Volatility 3
+    # carves raw guest RAM (.vmem/.vmrs) for SAM/LSA/cached creds (the HTB-Checkpoint
+    # root step). pycryptodome is REQUIRED or vol3's credential plugins don't register.
+    "volatility3>=2.5.0",
+    "pycryptodome>=3.20",
+]
+
+[project.urls]
+homepage = "https://github.com/ADscanPro/adscan"
+documentation = "https://adscanpro.com/docs"
+repository = "https://github.com/ADscanPro/adscan"
+issues = "https://github.com/ADscanPro/adscan/issues"
+changelog = "https://github.com/ADscanPro/adscan/releases"
+
+[project.scripts]
+adscan = "adscan_launcher.cli:main"
+
+[tool.uv.sources]
+# Vendored skelsec native AD stack — committed under vendor/ as the single
+# source of truth for the entire skelsec ecosystem. We pin to the local
+# checkout (not PyPI) so the code we read in vendor/<lib>/ is exactly what
+# runs in production. The stack is LOCALLY_MAINTAINED (forked); track upstream
+# drift read-only via scripts/check_vendor_drift.sh + vendor/UPSTREAM_SHAS.txt.
+#
+# Why this exists: PyPI releases of these libraries lag the upstream
+# repositories by months and ship known protocol bugs (e.g., aiosmb 0.4.14
+# on PyPI rejects cross-principal SchRpcRegisterTask with
+# rpc_s_access_denied — fixed in main but unreleased). Vendoring eliminates
+# the drift, satisfies the CLAUDE.md "Read source before calling" rule, and
+# keeps the entire skelsec stack version-coherent.
+# editable = true  → vendor/ source is the live import; any patch to vendor/<lib>/
+#                    is reflected immediately without `uv sync`. Required for
+#                    LOCALLY_MAINTAINED libs that carry ADscan-specific edits.
+# editable = false → wheel snapshot; safe for libs we never patch.
+aardwolf     = { path = "vendor/aardwolf",     editable = true  }
+aiosmb       = { path = "vendor/aiosmb",       editable = true  }
+asysocks     = { path = "vendor/asysocks",     editable = false }
+badauth      = { path = "vendor/badauth",      editable = true  }
+badldap      = { path = "vendor/badldap",      editable = true  }
+kerbad       = { path = "vendor/kerbad",       editable = true  }
+winacl       = { path = "vendor/winacl",       editable = false }
+pypykatz     = { path = "vendor/pypykatz",     editable = false }
+
+[tool.setuptools.packages.find]
+include = ["adscan_core*", "adscan_launcher*"]
+
+[tool.setuptools.package-data]
+adscan_launcher = ["assets/**/*.yml", "assets/**/*.yaml"]
+adscan_internal = ["pro/reporting/templates/*.html", "assets/demo_workspace/*.json", "assets/report_samples/*.pdf", "assets/rules/*.rule"]

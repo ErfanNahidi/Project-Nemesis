@@ -1,0 +1,23 @@
+# Upstream HEAD SHAs for vendored libraries.
+#
+# Updated automatically by scripts/check_vendor_drift.sh after each deliberate rebase.
+# Format: <lib> <github_owner> <sha>
+#
+# To rebase a lib intentionally:
+#   git clone --depth=1 https://github.com/<owner>/<lib>.git /tmp/<lib>
+#   rsync -a --delete --exclude='.gitkeep' /tmp/<lib>/ vendor/<lib>/
+#   # forward-port ADscan patches if lib is in LOCALLY_MAINTAINED (see scripts/check_vendor_drift.sh)
+#   uv lock && uv sync --extra cli
+#   uv run python -m tests.lab.runner --profile goad --area smb
+#   # update this file:
+#   scripts/check_vendor_drift.sh --update-shas
+#   git add vendor/ uv.lock && git commit -m "vendor(<lib>): rebase to upstream <sha[:8]>"
+#
+kerbad   CravateRouge 3af6c865a8abaa42e6dd1889b0dbdcec0190ea81
+badauth  CravateRouge 110cb42ea527a0f0d852cff52bfa1f480b4a8490
+badldap  CravateRouge 27032c9a736f88ede897a14a0c144482e1d28776
+aiosmb   skelsec      a94cc8691cccee0800b41a843427e98eee9c3772
+aardwolf skelsec      5d44d39771efbfa4793cab1829515a5f08afbe71
+asysocks skelsec      c454dbbc8acfacd34d3bb606444d6dec25401a22
+winacl   skelsec      2d8983fbf3b79184d26b1fb2643066bd8254ade4
+pypykatz skelsec      cb536d05af8b24ec8d21a6d9d99e0079fd4bb3da

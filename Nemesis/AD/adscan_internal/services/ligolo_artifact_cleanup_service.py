@@ -1,0 +1,585 @@
+"""Cleanup helpers for remote Ligolo agent artifacts.
+
+This service centralizes best-effort removal of staged Ligolo agent binaries
+from pivot hosts. It is intentionally conservative:
+
+- Cleanup is attempted automatically when tunnel creation fails after upload.
+- Cleanup is attempted again when the keepalive monitor observes tunnel death.
+- Cleanup is attempted on clean ADscan shutdown for persisted Ligolo pivots.
+
+Cleanup execution is transport-aware and reuses the shared remote Windows
+execution backends so WinRM/MSSQL pivots can converge on the same lifecycle.
+When no reusable cleartext credential is available, ADscan records that
+operator action is required and surfaces the exact remote path.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+from typing import Any, Callable
+
+from adscan_internal import print_info, print_info_debug, print_warning, telemetry
+from adscan_internal.rich_output import confirm_operation, mark_sensitive
+from adscan_internal.services.ligolo_service import LigoloProxyService
+from adscan_internal.services.exploitation.remote_windows_execution import (
+    RemoteWindowsAuth,
+    RemoteWindowsExecutionService,
+)
+from adscan_internal.services.pivot_auth_context_service import resolve_pivot_auth_secret
+
+
+@dataclass(frozen=True, slots=True)
+class LigoloArtifactCleanupResult:
+    """Outcome of one remote Ligolo artifact cleanup attempt."""
+
+    tunnel_id: str | None
+    domain: str
+    pivot_host: str
+    remote_agent_path: str
+    cleanup_attempted: bool
+    cleanup_succeeded: bool
+    credential_available: bool
+    process_stop_attempted: bool
+    process_stopped: bool
+    file_existed_before: bool
+    file_deleted: bool
+    reason: str
+    message: str
+
+
+def _utc_now_iso() -> str:
+    """Return the current UTC timestamp in ISO format."""
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def confirm_ligolo_artifact_deployment(
+    *,
+    pivot_host: str,
+    remote_agent_path: str,
+    default: bool,
+) -> bool:
+    """Confirm remote agent staging with one rich deployment prompt."""
+
+    context = {
+        "Pivot Host": mark_sensitive(pivot_host, "hostname"),
+        "Staged Agent": mark_sensitive(remote_agent_path, "path"),
+        "Cleanup": "On failure, tunnel drop, or clean ADscan exit",
+    }
+    description = (
+        "ADscan will stage a temporary Ligolo agent on the pivot host so the tunnel can be established. "
+        "The binary must remain present while the tunnel is active. Abrupt operator shutdowns can leave the file behind "
+        "on the target host, so exit ADscan cleanly whenever possible."
+    )
+    return confirm_operation(
+        "Ligolo Pivot Deployment",
+        description,
+        context=context,
+        default=default,
+        icon="🧭",
+        show_panel=True,
+    )
+
+
+def _build_windows_ligolo_cleanup_script(
+    *,
+    remote_agent_path: str,
+    remote_agent_pid: int | None,
+) -> str:
+    """Return one PowerShell script that stops and deletes a staged Ligolo agent."""
+
+    escaped_path = str(remote_agent_path).replace("'", "''")
+    pid_literal = str(int(remote_agent_pid)) if isinstance(remote_agent_pid, int) and remote_agent_pid > 0 else "$null"
+    return rf"""
+$ErrorActionPreference = 'SilentlyContinue'
+$agentPath = '{escaped_path}'
+$agentPid = {pid_literal}
+$result = [ordered]@{{
+    path = $agentPath
+    pid = $agentPid
+    file_existed_before = $false
+    process_stop_attempted = $false
+    process_stopped = $false
+    file_deleted = $false
+    cleanup_error = $null
+}}
+$result.file_existed_before = Test-Path -LiteralPath $agentPath
+
+if ($agentPid) {{
+    try {{
+        $proc = Get-Process -Id $agentPid -ErrorAction Stop
+        if ($proc) {{
+            $result.process_stop_attempted = $true
+            Stop-Process -Id $agentPid -Force -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $result.process_stopped = -not (Get-Process -Id $agentPid -ErrorAction SilentlyContinue)
+        }}
+    }} catch {{}}
+}}
+
+if (-not $result.process_stop_attempted) {{
+    try {{
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {{ $_.ExecutablePath -eq $agentPath }})
+        if ($procs.Count -gt 0) {{
+            $result.process_stop_attempted = $true
+            foreach ($proc in $procs) {{
+                Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+            }}
+            Start-Sleep -Seconds 2
+            $stillRunning = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ExecutablePath -eq $agentPath }})
+            $result.process_stopped = ($stillRunning.Count -eq 0)
+        }}
+    }} catch {{}}
+}}
+
+try {{
+    if (Test-Path -LiteralPath $agentPath) {{
+        Remove-Item -LiteralPath $agentPath -Force -ErrorAction Stop
+    }}
+    $result.file_deleted = -not (Test-Path -LiteralPath $agentPath)
+}} catch {{
+    $result.cleanup_error = $_.Exception.Message
+    $result.file_deleted = -not (Test-Path -LiteralPath $agentPath)
+}}
+
+[PSCustomObject]$result | ConvertTo-Json -Depth 4 -Compress
+"""
+
+
+def cleanup_remote_ligolo_artifact(
+    *,
+    domain: str,
+    pivot_host: str,
+    username: str,
+    password: str,
+    remote_agent_path: str,
+    remote_agent_pid: int | None,
+    execute_remote_script: Callable[..., str],
+    tunnel_id: str | None = None,
+    reason: str,
+) -> LigoloArtifactCleanupResult:
+    """Best-effort removal of one remote Ligolo agent artifact via one transport."""
+
+    if not remote_agent_path:
+        return LigoloArtifactCleanupResult(
+            tunnel_id=tunnel_id,
+            domain=domain,
+            pivot_host=pivot_host,
+            remote_agent_path="",
+            cleanup_attempted=False,
+            cleanup_succeeded=False,
+            credential_available=bool(password),
+            process_stop_attempted=False,
+            process_stopped=False,
+            file_existed_before=False,
+            file_deleted=False,
+            reason=reason,
+            message="No remote Ligolo agent path was recorded.",
+        )
+
+    if not password:
+        return LigoloArtifactCleanupResult(
+            tunnel_id=tunnel_id,
+            domain=domain,
+            pivot_host=pivot_host,
+            remote_agent_path=remote_agent_path,
+            cleanup_attempted=False,
+            cleanup_succeeded=False,
+            credential_available=False,
+            process_stop_attempted=False,
+            process_stopped=False,
+            file_existed_before=False,
+            file_deleted=False,
+            reason=reason,
+            message="No reusable cleartext credential is available for remote cleanup.",
+        )
+
+    cleanup_script = _build_windows_ligolo_cleanup_script(
+        remote_agent_path=remote_agent_path,
+        remote_agent_pid=remote_agent_pid,
+    )
+    try:
+        stdout_text = execute_remote_script(
+            domain=domain,
+            host=pivot_host,
+            username=username,
+            password=password,
+            script=cleanup_script,
+            operation_name="ligolo_agent_cleanup",
+        )
+    except Exception as exc:  # noqa: BLE001
+        telemetry.capture_exception(exc)
+        return LigoloArtifactCleanupResult(
+            tunnel_id=tunnel_id,
+            domain=domain,
+            pivot_host=pivot_host,
+            remote_agent_path=remote_agent_path,
+            cleanup_attempted=True,
+            cleanup_succeeded=False,
+            credential_available=True,
+            process_stop_attempted=False,
+            process_stopped=False,
+            file_existed_before=False,
+            file_deleted=False,
+            reason=reason,
+            message=f"Remote cleanup failed: {exc}",
+        )
+
+    payload: dict[str, Any] = {}
+    try:
+        parsed = json.loads(str(stdout_text or "").strip() or "{}")
+        if isinstance(parsed, dict):
+            payload = parsed
+    except json.JSONDecodeError:
+        print_info_debug(f"[ligolo-cleanup] unexpected cleanup payload: {stdout_text!r}")
+
+    file_existed_before = bool(payload.get("file_existed_before"))
+    file_deleted = bool(payload.get("file_deleted"))
+    process_stop_attempted = bool(payload.get("process_stop_attempted"))
+    process_stopped = bool(payload.get("process_stopped"))
+    cleanup_error = str(payload.get("cleanup_error") or "").strip()
+    cleanup_succeeded = file_deleted or not file_existed_before
+    message = cleanup_error or (
+        "Remote Ligolo artifact deleted."
+        if cleanup_succeeded
+        else "Remote Ligolo artifact could not be confirmed as deleted."
+    )
+
+    return LigoloArtifactCleanupResult(
+        tunnel_id=tunnel_id,
+        domain=domain,
+        pivot_host=pivot_host,
+        remote_agent_path=remote_agent_path,
+        cleanup_attempted=True,
+        cleanup_succeeded=cleanup_succeeded,
+        credential_available=True,
+        process_stop_attempted=process_stop_attempted,
+        process_stopped=process_stopped,
+        file_existed_before=file_existed_before,
+        file_deleted=file_deleted,
+        reason=reason,
+        message=message,
+    )
+
+
+def _resolve_reusable_pivot_secret(
+    shell: Any,
+    *,
+    domain: str,
+    username: str,
+    source_service: str,
+    record: dict[str, Any],
+) -> str | None:
+    """Return the reusable auth material for one persisted Ligolo pivot."""
+    return resolve_pivot_auth_secret(
+        shell,
+        domain=domain,
+        username=username,
+        source_service=source_service,
+        record=record,
+    )
+
+
+def _refresh_expired_ccache_for_cleanup(
+    shell: Any,
+    *,
+    domain: str,
+    username: str,
+    secret: str | None,
+) -> str | None:
+    """Refresh a generic Kerberos ccache once before the end-of-session cleanup pass.
+
+    End-of-session cleanup frequently runs with a TGT that expired during the
+    engagement. The WinRM PSRP transport hands its ``.ccache`` straight to
+    pyspnego/GSSAPI, which does NOT route through the ``_kerberos_recovery``
+    reminter seam (that seam only covers the badldap/aiosmb transports), so an
+    expired ticket there fails the cleanup with ``Ticket expired`` and leaves
+    real artifacts (the Ligolo agent + any changed credential) on the client
+    host. To keep cleanup self-healing we re-mint the principal's TGT ONCE,
+    up front, via the ``ensure_user_ccache`` SSOT.
+
+    Only generic credentials are refreshed. A capability-bearing ccache (a
+    marked ESC13 PAC-injected TGT) must NEVER be re-minted — re-authenticating
+    would drop the synthetic group SID — so it is returned as-is. A non-ccache
+    secret (password / NT hash) is also returned unchanged: the WinRM path mints
+    a fresh ticket from it on demand, so it is already self-healing.
+
+    Returns the (possibly refreshed) secret to use for cleanup. On any failure
+    the original secret is returned unchanged so the existing fail-closed
+    manual-required ledger path still applies.
+    """
+
+    value = str(secret or "").strip()
+    if not value.lower().endswith(".ccache"):
+        # Password / NT hash: the WinRM PSRP path mints a fresh TGT on demand.
+        return secret
+    if not username or not domain:
+        return secret
+
+    # Capability-bearing carve-out: never re-mint a marked ESC13 / scoped ticket.
+    try:
+        from adscan_internal.services.credential_store_service import (
+            get_capability_bearing_ccache,
+        )
+
+        marked = get_capability_bearing_ccache(
+            getattr(shell, "domains_data", None),
+            domain=domain,
+            username=username,
+        )
+        if marked and str(marked).strip() == value:
+            print_info_debug(
+                "[ligolo-cleanup] cleanup credential is a capability-bearing ccache; "
+                "skipping pre-cleanup TGT refresh to preserve its synthetic SID."
+            )
+            return secret
+    except Exception as exc:  # noqa: BLE001 - carve-out probe is best-effort
+        telemetry.capture_exception(exc)
+
+    try:
+        from adscan_internal.services.kerberos_ticket_service import ensure_user_ccache
+
+        dc_ip = getattr(shell, "current_dc_ip", None) or None
+        refreshed = ensure_user_ccache(
+            shell,
+            user=username,
+            domain=domain,
+            dc_ip=dc_ip,
+            force_refresh=True,
+        )
+        if refreshed:
+            print_info_debug(
+                "[ligolo-cleanup] refreshed end-of-session TGT before cleanup for "
+                f"{mark_sensitive(username, 'user')}@{str(domain or '').upper()}"
+            )
+            return refreshed
+        print_info_debug(
+            "[ligolo-cleanup] could not re-mint TGT before cleanup; "
+            "falling back to the stored (possibly expired) ccache."
+        )
+    except Exception as exc:  # noqa: BLE001 - refresh is best-effort
+        telemetry.capture_exception(exc)
+        print_info_debug(
+            f"[ligolo-cleanup] pre-cleanup TGT refresh failed (ignored): {exc}"
+        )
+    return secret
+
+
+def _persist_cleanup_result(
+    *,
+    service: LigoloProxyService,
+    tunnel_id: str | None,
+    result: LigoloArtifactCleanupResult,
+) -> None:
+    """Persist cleanup metadata back to the workspace tunnel record."""
+
+    if not tunnel_id:
+        return
+    status = "deleted" if result.cleanup_succeeded else "operator_action_required"
+    service.update_tunnel_record(
+        tunnel_id=tunnel_id,
+        updates={
+            "remote_artifact_cleanup_at": _utc_now_iso(),
+            "remote_artifact_cleanup_reason": result.reason,
+            "remote_artifact_cleanup_status": status,
+            "remote_artifact_cleanup_message": result.message,
+            "remote_artifact_deleted": result.file_deleted,
+        },
+    )
+
+
+def cleanup_workspace_ligolo_artifacts(
+    shell: Any,
+    *,
+    reason: str,
+) -> list[LigoloArtifactCleanupResult]:
+    """Best-effort cleanup of persisted Ligolo agent artifacts for one workspace."""
+
+    workspace_dir = str(getattr(shell, "current_workspace_dir", "") or "").strip()
+    if not workspace_dir:
+        return []
+
+    service = LigoloProxyService(
+        workspace_dir=workspace_dir,
+        current_domain=getattr(shell, "current_domain", None),
+    )
+    candidates = [
+        dict(record)
+        for record in service.load_tunnels_state()
+        if str(record.get("pivot_tool") or "").strip().lower() == "ligolo"
+        and str(record.get("remote_agent_path") or "").strip()
+        and str(record.get("remote_artifact_cleanup_status") or "").strip().lower() != "deleted"
+    ]
+    if not candidates:
+        return []
+
+    print_info("ADscan is cleaning up staged Ligolo agent artifacts. Please wait...")
+    results: list[LigoloArtifactCleanupResult] = []
+    for record in candidates:
+        tunnel_id = str(record.get("tunnel_id") or "").strip() or None
+        domain = str(record.get("domain") or "").strip()
+        source_service = str(record.get("source_service") or "winrm").strip().lower()
+        pivot_host = str(record.get("pivot_host") or "").strip()
+        username = str(record.get("pivot_username") or "").strip()
+        remote_agent_path = str(record.get("remote_agent_path") or "").strip()
+        remote_agent_pid = record.get("remote_agent_pid")
+        pivot_auth = record.get("pivot_auth") if isinstance(record.get("pivot_auth"), dict) else {}
+        kerberos_spn_host = (
+            str(record.get("pivot_kerberos_spn_host") or "").strip()
+            or str(pivot_auth.get("kerberos_spn_host") or "").strip()
+            or None
+        )
+        password = _resolve_reusable_pivot_secret(
+            shell,
+            domain=domain,
+            username=username,
+            source_service=source_service,
+            record=record,
+        )
+
+        # An end-of-session TGT is frequently expired. The WinRM PSRP cleanup
+        # path uses the ccache via GSSAPI (outside the _kerberos_recovery
+        # reminter seam), so a stale ticket would fail the cleanup and orphan
+        # the Ligolo agent on the client host. Re-mint a generic TGT once, up
+        # front, before the cleanup pass; capability-bearing ccaches are left
+        # untouched and a refresh failure falls through to the fail-closed
+        # manual-required ledger path below.
+        password = _refresh_expired_ccache_for_cleanup(
+            shell,
+            domain=domain,
+            username=username,
+            secret=password,
+        )
+
+        if tunnel_id:
+            service.update_tunnel_record(
+                tunnel_id=tunnel_id,
+                updates={
+                    "shutdown_requested": True,
+                    "shutdown_requested_at": _utc_now_iso(),
+                    "shutdown_reason": reason,
+                },
+            )
+
+        if tunnel_id and str(record.get("status") or "").strip().lower() in {"running", "connected", "disconnected"}:
+            try:
+                service.stop_tunnel(tunnel_id=tunnel_id)
+            except Exception as exc:  # noqa: BLE001
+                print_info_debug(f"[ligolo-cleanup] stop_tunnel failed for {tunnel_id}: {exc}")
+
+        remote_executor = RemoteWindowsExecutionService(shell)
+
+        def _execute_remote_script(**kwargs: Any) -> str:
+            secret = str(kwargs.get("password") or password or "")
+            winrm_secret = (
+                secret
+                if source_service == "winrm" and secret.strip().lower().endswith(".ccache")
+                else None
+            )
+            auth = RemoteWindowsAuth(
+                domain=str(kwargs.get("domain") or domain),
+                host=str(kwargs.get("host") or pivot_host),
+                username=str(kwargs.get("username") or username),
+                secret=secret,
+                winrm_secret=winrm_secret,
+                kerberos_spn_host=kerberos_spn_host,
+            )
+            result = remote_executor.execute_powershell(
+                auth,
+                str(kwargs.get("script") or ""),
+                operation_name=str(kwargs.get("operation_name") or "ligolo_agent_cleanup"),
+                preferred_transport=source_service,
+                timeout=300,
+            )
+            if not result.success:
+                raise RuntimeError(
+                    result.error_message or result.stderr or "Remote cleanup execution failed."
+                )
+            return str(result.stdout or "")
+
+        # Register file artifact with ledger before attempting cleanup
+        ledger = getattr(shell, "environment_change_ledger", None)
+        _ledger_change_id: str | None = None
+        if ledger is not None and remote_agent_path:
+            _unc_agent_path = remote_agent_path.replace("/", "\\")
+            _ledger_change_id = ledger.register_change(
+                kind="file_uploaded",
+                domain=str(domain or ""),
+                target=f"\\\\{pivot_host}\\{_unc_agent_path}",
+                detail={
+                    "host": str(pivot_host or ""),
+                    "path": str(remote_agent_path or ""),
+                    "tunnel_id": str(tunnel_id or ""),
+                    "source_service": str(record.get("source_service") or ""),
+                },
+                method="Ligolo pivot tunnel agent",
+            )
+
+        result = cleanup_remote_ligolo_artifact(
+            domain=domain,
+            pivot_host=pivot_host,
+            username=username,
+            password=str(password or ""),
+            remote_agent_path=remote_agent_path,
+            remote_agent_pid=remote_agent_pid if isinstance(remote_agent_pid, int) else None,
+            execute_remote_script=_execute_remote_script,
+            tunnel_id=tunnel_id,
+            reason=reason,
+        )
+        _persist_cleanup_result(service=service, tunnel_id=tunnel_id, result=result)
+        results.append(result)
+
+        # Update ledger based on cleanup outcome
+        if ledger is not None and _ledger_change_id:
+            if result.cleanup_succeeded:
+                ledger.mark_reverted(_ledger_change_id)
+            elif not result.credential_available:
+                ledger.mark_operator_required(
+                    _ledger_change_id,
+                    manual_cleanup_instructions=(
+                        f"Delete the staged agent manually on {pivot_host}:\n"
+                        f"  del \"{remote_agent_path}\""
+                    ),
+                )
+            else:
+                ledger.mark_failed(
+                    _ledger_change_id,
+                    error=result.message,
+                    manual_cleanup_instructions=(
+                        f"Delete the staged agent manually on {pivot_host}:\n"
+                        f"  del \"{remote_agent_path}\""
+                    ),
+                )
+
+        if result.cleanup_succeeded:
+            print_info(
+                f"Removed Ligolo agent artifact from {mark_sensitive(pivot_host, 'hostname')}: "
+                f"{mark_sensitive(remote_agent_path, 'path')}"
+            )
+        elif not result.credential_available:
+            print_warning(
+                f"ADscan could not clean the Ligolo agent artifact on "
+                f"{mark_sensitive(pivot_host, 'hostname')} because no reusable cleartext credential is stored.",
+                items=[f"Verify manually: {mark_sensitive(remote_agent_path, 'path')}"],
+                panel=True,
+            )
+        else:
+            print_warning(
+                f"ADscan could not confirm Ligolo artifact cleanup on {mark_sensitive(pivot_host, 'hostname')}.",
+                items=[
+                    f"Path: {mark_sensitive(remote_agent_path, 'path')}",
+                    result.message,
+                ],
+                panel=True,
+            )
+    return results
+
+
+__all__ = [
+    "confirm_ligolo_artifact_deployment",
+    "LigoloArtifactCleanupResult",
+    "cleanup_remote_ligolo_artifact",
+    "cleanup_workspace_ligolo_artifacts",
+]
