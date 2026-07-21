@@ -18,21 +18,15 @@ LOG_FILE = Path.home() / ".nemesis.log"
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
                     format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
-# ---------- PyInstaller / portable bundle support ----------
-if getattr(sys, 'frozen', False):
-    BUNDLE_DIR = Path(sys._MEIPASS)          # temporary extraction folder
-else:
-    BUNDLE_DIR = Path(__file__).resolve().parent
-
-# ---------- Tool paths (all relative to BUNDLE_DIR) ----------
-PIG_SCRIPT = BUNDLE_DIR / "DHCP" / "pig.py"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PIG_SCRIPT = SCRIPT_DIR / "DHCP" / "pig.py"
 DNSFORGE_MODULE = "DNS"
-ADSCAN_SCRIPT = BUNDLE_DIR / "AD" / "adscan.py"
-GHOSTLOCK_SCRIPT = BUNDLE_DIR / "SMB" / "ghostlock.py"
-SNIFFING_SCRIPT = BUNDLE_DIR / "sniffing" / "network_sniffer.py"
-DOS_MODULE_DIR = BUNDLE_DIR / "Net"           # where 'src' package lives
+ADSCAN_SCRIPT = SCRIPT_DIR / "AD" / "adscan.py"
+GHOSTLOCK_SCRIPT = SCRIPT_DIR / "SMB" / "ghostlock.py"
+SNIFFING_SCRIPT = SCRIPT_DIR / "sniffing" / "network_sniffer.py"
+DOS_MODULE_DIR = SCRIPT_DIR / "Net"           # where 'src' package lives
 
-# ---------- Startup checks ----------
+# --- Startup checks ---
 def check_tool(path, name):
     if not path.exists():
         sys.exit(f"ERROR: {name} not found at {path}.\n"
@@ -43,12 +37,12 @@ check_tool(ADSCAN_SCRIPT, "adscan.py")
 check_tool(GHOSTLOCK_SCRIPT, "ghostlock.py")
 check_tool(SNIFFING_SCRIPT, "network_sniffer.py")
 
-# DNS module import
-sys.path.insert(0, str(BUNDLE_DIR))
+# DNS module
+sys.path.insert(0, str(SCRIPT_DIR))
 try:
     __import__(DNSFORGE_MODULE)
 except ImportError:
-    sys.exit(f"ERROR: {DNSFORGE_MODULE} module not found in {BUNDLE_DIR}\n"
+    sys.exit(f"ERROR: {DNSFORGE_MODULE} module not found in {SCRIPT_DIR}\n"
              "Make sure dnsforge.py is inside the DNS folder.")
 
 # DoS module (must be a package or module inside Net/)
@@ -145,7 +139,6 @@ class InterfaceManager:
 iface_mgr = InterfaceManager()
 
 def run_command(cmd, attack_type, cwd=None):
-    """Execute an attack command after user confirmation, with a loading spinner."""
     desc = " ".join(cmd)
     clear_screen()
     logo()
@@ -162,9 +155,9 @@ def run_command(cmd, attack_type, cwd=None):
 
     try:
         if os.geteuid() != 0:
-            subprocess.run(["sudo"] + cmd, cwd=cwd or str(BUNDLE_DIR))
+            subprocess.run(["sudo"] + cmd, cwd=cwd or str(SCRIPT_DIR))
         else:
-            subprocess.run(cmd, cwd=cwd or str(BUNDLE_DIR))
+            subprocess.run(cmd, cwd=cwd or str(SCRIPT_DIR))
     except KeyboardInterrupt:
         print(f"\n{Colors.MUTED}Attack interrupted by user.{Colors.RESET}")
     except Exception as e:
@@ -186,8 +179,7 @@ class DHCPAttacks:
             args.extend(["-i", iface])
         else:
             iface_mgr._saved_iface = iface
-        # Use sys.executable so the script runs with the same interpreter
-        cmd = [sys.executable, str(PIG_SCRIPT)] + args
+        cmd = [str(PIG_SCRIPT)] + args
         run_command(cmd, "DHCP")
 
     @staticmethod
@@ -322,7 +314,7 @@ class DNSAttacks:
             args.extend(["-i", iface])
         else: iface_mgr._saved_iface = iface
 
-        cmd = [sys.executable, "-m", DNSFORGE_MODULE] + args + [mode]
+        cmd = ["python3", "-m", DNSFORGE_MODULE] + args + [mode]
         run_command(cmd, "DNS")
 
     @staticmethod
@@ -424,7 +416,7 @@ class DNSAttacks:
 class ADAttacks:
     @staticmethod
     def run(args):
-        cmd = [sys.executable, str(ADSCAN_SCRIPT)] + args
+        cmd = [str(ADSCAN_SCRIPT)] + args
         run_command(cmd, "Active Directory")
 
     @staticmethod
@@ -525,7 +517,7 @@ class ADAttacks:
 class SMBAttacks:
     @staticmethod
     def run(args):
-        cmd = [sys.executable, str(GHOSTLOCK_SCRIPT)] + args
+        cmd = ["python3", str(GHOSTLOCK_SCRIPT)] + args
         run_command(cmd, "SMB Ghostlock")
 
     @staticmethod
@@ -622,7 +614,7 @@ class SMBAttacks:
 class SniffingAttacks:
     @staticmethod
     def run(args):
-        cmd = [sys.executable, str(SNIFFING_SCRIPT)] + args
+        cmd = ["python3", str(SNIFFING_SCRIPT)] + args
         run_command(cmd, "Sniffing")
 
     @staticmethod
@@ -686,7 +678,7 @@ class SniffingAttacks:
 class DOSAttacks:
     @staticmethod
     def run(args):
-        cmd = [sys.executable, "-m", "src"] + args
+        cmd = ["python3", "-m", "src"] + args
         run_command(cmd, "DoS", cwd=str(DOS_MODULE_DIR))
 
     @staticmethod
@@ -760,6 +752,62 @@ class DOSAttacks:
             elif choice == "0": break
             else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
+# ==================== About ====================
+
+ABOUT_ME = """
+I`m Erfan Nahidi
+Virtualization & Infrastructure Administrator
+
+Focused on designing scalable, resilient, and high-performance datacenter
+infrastructures. Passionate about virtualization, Linux systems, networking,
+and low-level computing, with a strong interest in systems programming and
+infrastructure engineering.
+"""
+
+ABOUT_PROJECT = """
+This project was developed as part of my Software Project course at
+Islamic Azad University, Karaj.
+
+It is provided strictly for educational and research purposes and is intended
+to be used only in isolated virtual lab environments.
+
+This software is not designed, tested, or intended for use against production
+systems or unauthorized targets. The author assumes no responsibility for any
+misuse or damages resulting from the use of this project.
+"""
+
+class About:
+    @staticmethod
+    def Me():
+        clear_screen()
+        logo()
+        banner("About Me")
+        print(f"{Colors.CYAN}{ABOUT_ME.strip()}{Colors.RESET}")
+        pause()
+
+    @staticmethod
+    def Project():
+        clear_screen()
+        logo()
+        banner("About This Project")
+        print(f"{Colors.YELLOW}{ABOUT_PROJECT.strip()}{Colors.RESET}")
+        pause()
+
+    @staticmethod
+    def main_menu():
+        while True:
+            clear_screen(); logo(); banner("About Menu")
+            print(f"""{Colors.YELLOW}
+  [1] About Me
+  [2] About this Project
+  [0] Return to main menu
+{Colors.RESET}""")
+            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
+            if choice == "1": About.Me()
+            elif choice == "2": About.Project()
+            elif choice == "0": break
+            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
+
 # ==================== Main Dashboard ====================
 def main_menu():
     while True:
@@ -771,6 +819,7 @@ def main_menu():
   [4] SMB Attack Lab
   [5] Sniffing Lab
   [6] DoS Attack Lab
+  [7] About
   [0] Exit
 {Colors.RESET}""")
         choice = input(f"{Colors.CYAN}Select a module: {Colors.RESET}").strip()
@@ -780,6 +829,7 @@ def main_menu():
         elif choice == "4": SMBAttacks.main_menu()
         elif choice == "5": SniffingAttacks.main_menu()
         elif choice == "6": DOSAttacks.main_menu()
+        elif choice == "7": About.main_menu()
         elif choice in ("0", "q", "Q", "exit"):
             clear_screen()
             print(f"{Colors.MUTED}Stay curious. Stay authorized.{Colors.RESET}")
@@ -805,6 +855,7 @@ Modules:
   smbattack / smb      SMB Ghostlock Attack Lab
   sniffing / sniff     Sniffing Lab
   dos / dosattack      DoS Attack Lab
+  about                About Menu
   -h, --help           Show this help
   --version            Show version
   --check              Verify all tools
@@ -813,6 +864,8 @@ Modules:
         print(f"Project Nemesis v{VERSION}")
     elif arg == "--check":
         print(f"{Colors.GREEN}✓ All tools verified successfully.{Colors.RESET}")
+    elif arg == "about":
+        About.main_menu()
     else:
         print(f"{Colors.RED}Unknown module: {arg}{Colors.RESET}", file=sys.stderr)
         sys.exit(1)
