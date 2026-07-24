@@ -9,8 +9,6 @@ import os
 import sys
 import subprocess
 import logging
-import time
-import threading
 from pathlib import Path
 
 VERSION = "3.0.0"
@@ -19,6 +17,7 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
                     format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SCANNER_SCRIPT = SCRIPT_DIR / "scanner" / "scanner.py"
 PIG_SCRIPT = SCRIPT_DIR / "DHCP" / "pig.py"
 DNSFORGE_MODULE = "DNS"
 ADSCAN_SCRIPT = SCRIPT_DIR / "AD" / "adscan.py"
@@ -32,6 +31,7 @@ def check_tool(path, name):
         sys.exit(f"ERROR: {name} not found at {path}.\n"
                  f"Make sure {name} is placed correctly.")
 
+check_tool(SCANNER_SCRIPT, "scanner.py")
 check_tool(PIG_SCRIPT, "pig.py")
 check_tool(ADSCAN_SCRIPT, "adscan.py")
 check_tool(GHOSTLOCK_SCRIPT, "ghostlock.py")
@@ -168,6 +168,7 @@ def run_command(cmd, attack_type, cwd=None):
 
 # ==================== DHCP Attacks ====================
 class DHCPAttacks:
+    # ... (unchanged) ...
     @staticmethod
     def run(args):
         iface = DHCPAttacks._extract_iface(args)
@@ -291,6 +292,7 @@ class DHCPAttacks:
 
 # ==================== DNS Attacks ====================
 class DNSAttacks:
+    # ... (unchanged) ...
     @staticmethod
     def run(args):
         mode = None
@@ -414,6 +416,7 @@ class DNSAttacks:
 
 # ==================== AD Attacks ====================
 class ADAttacks:
+    # ... (unchanged) ...
     @staticmethod
     def run(args):
         cmd = [str(ADSCAN_SCRIPT)] + args
@@ -515,6 +518,7 @@ class ADAttacks:
 
 # ==================== SMB Attacks ====================
 class SMBAttacks:
+    # ... (unchanged) ...
     @staticmethod
     def run(args):
         cmd = ["python3", str(GHOSTLOCK_SCRIPT)] + args
@@ -612,6 +616,7 @@ class SMBAttacks:
 
 # ==================== Sniffing Lab ====================
 class SniffingAttacks:
+    # ... (unchanged) ...
     @staticmethod
     def run(args):
         cmd = ["python3", str(SNIFFING_SCRIPT)] + args
@@ -676,6 +681,7 @@ class SniffingAttacks:
 
 # ==================== DoS Attack Lab ====================
 class DOSAttacks:
+    # ... (unchanged) ...
     @staticmethod
     def run(args):
         cmd = ["python3", "-m", "src"] + args
@@ -752,8 +758,119 @@ class DOSAttacks:
             elif choice == "0": break
             else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
-# ==================== About ====================
+# ==================== Scanner Module ====================
+class Scanner:
+    @staticmethod
+    def run(args):
+        cmd = ["sudo", "python3", str(SCANNER_SCRIPT)] + args
+        run_command(cmd, "Scanner", cwd=str(SCRIPT_DIR))
 
+    @staticmethod
+    def quick_menu():
+        while True:
+            clear_screen(); logo(); banner("Quick Scan Profiles")
+            print(f"""{Colors.YELLOW}
+  [1] Quick scan (common ports, fast)
+  [2] Common scan (top 1000 ports, version & scripts)
+  [3] Full scan (all 65535 ports, very slow)
+  [4] Security scan (common + vulnerability check)
+  [0] Back
+{Colors.RESET}""")
+            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
+            if choice == "1":
+                target = input(f"{Colors.CYAN}Target (IP or CIDR): {Colors.RESET}").strip()
+                if target:
+                    Scanner.run([target, "-m", "quick"])
+            elif choice == "2":
+                target = input(f"{Colors.CYAN}Target (IP or CIDR): {Colors.RESET}").strip()
+                if target:
+                    Scanner.run([target, "-m", "common"])
+            elif choice == "3":
+                target = input(f"{Colors.CYAN}Target (IP or CIDR): {Colors.RESET}").strip()
+                if target:
+                    Scanner.run([target, "-m", "full"])
+            elif choice == "4":
+                target = input(f"{Colors.CYAN}Target (IP or CIDR): {Colors.RESET}").strip()
+                if target:
+                    Scanner.run([target, "-m", "common", "--vuln-check"])
+            elif choice == "0":
+                break
+            else:
+                print(f"{Colors.RED}Invalid option.{Colors.RESET}")
+
+    @staticmethod
+    def advanced_wizard():
+        args = []
+        clear_screen(); logo(); banner("Advanced Scanner Configuration")
+        print(f"{Colors.MUTED}Configure scan options. Leave empty to use defaults.{Colors.RESET}\n")
+
+        target = input(f"{Colors.CYAN}Target(s) (IP/CIDR, required): {Colors.RESET}").strip()
+        if not target:
+            print(f"{Colors.RED}Target is required.{Colors.RESET}")
+            return
+        args.append(target)
+
+        mode = input(f"{Colors.CYAN}Scan mode (quick/common/full/custom) [quick]: {Colors.RESET}").strip().lower()
+        if mode in ("quick", "common", "full", "custom"):
+            args.extend(["-m", mode])
+        else:
+            args.extend(["-m", "quick"])   # default
+
+        if input(f"{Colors.CYAN}Stealth mode? [y/N]: {Colors.RESET}").strip().lower() == "y":
+            args.append("--stealth")
+
+        if input(f"{Colors.CYAN}Vulnerability check (online NVD)? [y/N]: {Colors.RESET}").strip().lower() == "y":
+            args.append("--vuln-check")
+            nvd_key = input(f"{Colors.CYAN}  NVD API key (optional): {Colors.RESET}").strip()
+            if nvd_key:
+                args.extend(["--nvd-key", nvd_key])
+
+        extra_nmap = input(f"{Colors.CYAN}Extra Nmap arguments (e.g., -p 80,443): {Colors.RESET}").strip()
+        if extra_nmap:
+            args.extend(["--nmap-args", extra_nmap])
+
+        threads = input(f"{Colors.CYAN}Max parallel threads (default 10): {Colors.RESET}").strip()
+        if threads:
+            args.extend(["-t", threads])
+
+        output = input(f"{Colors.CYAN}Output base filename (without extension): {Colors.RESET}").strip()
+        if output:
+            args.extend(["-o", output])
+            fmt = input(f"{Colors.CYAN}  Output format (json/csv/html/all) [json]: {Colors.RESET}").strip().lower()
+            if fmt in ("json", "csv", "html", "all"):
+                args.extend(["--format", fmt])
+
+        if input(f"{Colors.CYAN}Verbose console output? [y/N]: {Colors.RESET}").strip().lower() == "y":
+            args.append("--verbose")
+
+        DHCPAttacks._final_review(args, lambda a: Scanner.run(a))
+
+    @staticmethod
+    def raw_args():
+        raw = input(f"{Colors.CYAN}Enter raw scanner arguments (including target): {Colors.RESET}").strip()
+        if raw:
+            Scanner.run(raw.split())
+        else:
+            print(f"{Colors.RED}No arguments.{Colors.RESET}")
+
+    @staticmethod
+    def main_menu():
+        while True:
+            clear_screen(); logo(); banner("Service Scanner")
+            print(f"""{Colors.YELLOW}
+  [1] Quick Scan (presets)
+  [2] Advanced Configuration (wizard)
+  [3] Enter raw scanner arguments
+  [0] Return to main menu
+{Colors.RESET}""")
+            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
+            if choice == "1": Scanner.quick_menu()
+            elif choice == "2": Scanner.advanced_wizard()
+            elif choice == "3": Scanner.raw_args()
+            elif choice == "0": break
+            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
+
+# ==================== About ====================
 ABOUT_ME = """
 I`m Erfan Nahidi
 Virtualization & Infrastructure Administrator
@@ -808,6 +925,70 @@ class About:
             elif choice == "0": break
             else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
+# ==================== Update Menu ====================
+class Update:
+    @staticmethod
+    def main_menu():
+        while True:
+            clear_screen(); logo(); banner("Update & Maintenance")
+            print(f"""{Colors.YELLOW}
+  [1] Install / update requirements (pip)
+  [2] Pull latest project from GitHub
+  [0] Back
+{Colors.RESET}""")
+            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
+            if choice == "1":
+                Update.install_requirements()
+            elif choice == "2":
+                Update.update_project()
+            elif choice == "0":
+                break
+            else:
+                print(f"{Colors.RED}Invalid option.{Colors.RESET}")
+                pause()
+
+    @staticmethod
+    def install_requirements():
+        clear_screen()
+        logo()
+        banner("Install Requirements")
+        req_file = SCRIPT_DIR / "requirements.txt"
+        if not req_file.exists():
+            print(f"{Colors.YELLOW}No requirements.txt found at {req_file}.{Colors.RESET}")
+            print("Create one or install packages manually.")
+            pause()
+            return
+        print(f"{Colors.CYAN}Installing from {req_file}...{Colors.RESET}")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req_file)], check=True)
+            print(f"{Colors.GREEN}Installation complete.{Colors.RESET}")
+        except subprocess.CalledProcessError as e:
+            print(f"{Colors.RED}Error during installation: {e}{Colors.RESET}")
+        pause()
+
+    @staticmethod
+    def update_project():
+        clear_screen()
+        logo()
+        banner("Update Project from Git")
+        git_dir = SCRIPT_DIR / ".git"
+        if not git_dir.exists():
+            print(f"{Colors.YELLOW}Not a git repository. Cannot update.{Colors.RESET}")
+            pause()
+            return
+        print(f"{Colors.CYAN}Running git pull...{Colors.RESET}")
+        try:
+            result = subprocess.run(["git", "pull"], cwd=str(SCRIPT_DIR), capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"{Colors.GREEN}Update successful.{Colors.RESET}")
+                print(result.stdout)
+            else:
+                print(f"{Colors.RED}Update failed:{Colors.RESET}")
+                print(result.stderr)
+        except Exception as e:
+            print(f"{Colors.RED}Error: {e}{Colors.RESET}")
+        pause()
+
 # ==================== Main Dashboard ====================
 def main_menu():
     while True:
@@ -818,19 +999,22 @@ def main_menu():
   [3] DNS Attacker
   [4] Active Directory Attacker
   [5] SMB Attacker
-  [6] Sniffinger
+  [6] Sniffing
   [7] DoS Attacker
+  [8] Update
   [9] About
   [0] Exit
 {Colors.RESET}""")
         choice = input(f"{Colors.CYAN}Select a module: {Colors.RESET}").strip()
-        if choice == "1": DHCPAttacks.main_menu()
-        elif choice == "2": DNSAttacks.main_menu()
-        elif choice == "3": ADAttacks.main_menu()
-        elif choice == "4": SMBAttacks.main_menu()
-        elif choice == "5": SniffingAttacks.main_menu()
-        elif choice == "6": DOSAttacks.main_menu()
-        elif choice == "7": About.main_menu()
+        if choice == "1": Scanner.main_menu()
+        elif choice == "2": DHCPAttacks.main_menu()
+        elif choice == "3": DNSAttacks.main_menu()
+        elif choice == "4": ADAttacks.main_menu()
+        elif choice == "5": SMBAttacks.main_menu()
+        elif choice == "6": SniffingAttacks.main_menu()
+        elif choice == "7": DOSAttacks.main_menu()
+        elif choice == "8": Update.main_menu()
+        elif choice == "9": About.main_menu()
         elif choice in ("0", "q", "Q", "exit"):
             clear_screen()
             print(f"{Colors.MUTED}Stay curious. Stay authorized.{Colors.RESET}")
@@ -840,23 +1024,28 @@ def main_menu():
 
 def handle_arg(arg):
     arg = arg.lower()
-    if arg in ("dhcplab", "dhcp", "7"): DHCPAttacks.main_menu()
-    elif arg in ("dnsattack", "dns", "8"): DNSAttacks.main_menu()
-    elif arg in ("adattack", "ad", "9"): ADAttacks.main_menu()
-    elif arg in ("smbattack", "smb", "ghostlock", "10"): SMBAttacks.main_menu()
-    elif arg in ("sniffing", "sniff", "11"): SniffingAttacks.main_menu()
-    elif arg in ("dos", "dosattack", "12"): DOSAttacks.main_menu()
+    if arg in ("scanner", "1"): Scanner.main_menu()
+    elif arg in ("dhcplab", "dhcp", "2"): DHCPAttacks.main_menu()
+    elif arg in ("dnsattack", "dns", "3"): DNSAttacks.main_menu()
+    elif arg in ("adattack", "ad", "4"): ADAttacks.main_menu()
+    elif arg in ("smbattack", "smb", "ghostlock", "5"): SMBAttacks.main_menu()
+    elif arg in ("sniffing", "sniff", "6"): SniffingAttacks.main_menu()
+    elif arg in ("dos", "dosattack", "7"): DOSAttacks.main_menu()
+    elif arg in ("update", "8"): Update.main_menu()
+    elif arg in ("about", "9"): About.main_menu()
     elif arg in ("-h", "--help"):
         print(f"""Project Nemesis v{VERSION}
 Usage: {sys.argv[0]} [module]
 Modules:
-  dhcplab / dhcp       DHCP Attack Lab
-  dnsattack / dns      DNS Attack Lab
-  adattack / ad        Active Directory Attack Lab
-  smbattack / smb      SMB Ghostlock Attack Lab
-  sniffing / sniff     Sniffing Lab
-  dos / dosattack      DoS Attack Lab
-  about                About Menu
+  scanner / 1          Service Scanner
+  dhcplab / dhcp / 2   DHCP Attack Lab
+  dnsattack / dns / 3  DNS Attack Lab
+  adattack / ad / 4    Active Directory Attack Lab
+  smbattack / smb / 5  SMB Ghostlock Attack Lab
+  sniffing / sniff / 6 Sniffing Lab
+  dos / dosattack / 7  DoS Attack Lab
+  update / 8           Update & Maintenance
+  about / 9            About Menu
   -h, --help           Show this help
   --version            Show version
   --check              Verify all tools
@@ -865,8 +1054,6 @@ Modules:
         print(f"Project Nemesis v{VERSION}")
     elif arg == "--check":
         print(f"{Colors.GREEN}✓ All tools verified successfully.{Colors.RESET}")
-    elif arg == "about":
-        About.main_menu()
     else:
         print(f"{Colors.RED}Unknown module: {arg}{Colors.RESET}", file=sys.stderr)
         sys.exit(1)

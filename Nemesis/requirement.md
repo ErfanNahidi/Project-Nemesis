@@ -10,5 +10,5 @@ python-nmap
 requests
 tqdm
 colorama
-pyyaml
+pyyaml 
 jinja2
