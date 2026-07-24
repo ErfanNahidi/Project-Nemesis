@@ -6,3 +6,9 @@ termcolor = "^2.4.0"
 netifaces = "^0.11.0"
 rich 
 dns
+python-nmap
+requests
+tqdm
+colorama
+pyyaml
+jinja2

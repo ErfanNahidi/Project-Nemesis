@@ -813,13 +813,14 @@ def main_menu():
     while True:
         clear_screen(); logo(); banner("Security Learning Dashboard")
         print(f"""{Colors.YELLOW}
-  [1] DHCP Attack Lab
-  [2] DNS Attack Lab
-  [3] Active Directory Attack Lab
-  [4] SMB Attack Lab
-  [5] Sniffing Lab
-  [6] DoS Attack Lab
-  [7] About
+  [1] Service Scanner
+  [2] DHCP Attacker
+  [3] DNS Attacker
+  [4] Active Directory Attacker
+  [5] SMB Attacker
+  [6] Sniffinger
+  [7] DoS Attacker
+  [9] About
   [0] Exit
 {Colors.RESET}""")
         choice = input(f"{Colors.CYAN}Select a module: {Colors.RESET}").strip()
