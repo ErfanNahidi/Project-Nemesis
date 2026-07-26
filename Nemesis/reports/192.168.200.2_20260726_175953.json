@@ -1,0 +1,173 @@
+{
+  "target": "192.168.200.2",
+  "os": "Unknown",
+  "timestamp": "2026-07-26T17:59:53.269068",
+  "services": [
+    "tcp/53 domain Simple DNS Plus",
+    "tcp/88 kerberos-sec Microsoft Windows Kerberos",
+    "tcp/135 msrpc Microsoft Windows RPC",
+    "tcp/139 netbios-ssn Microsoft Windows netbios-ssn",
+    "tcp/389 ldap Microsoft Windows Active Directory LDAP",
+    "tcp/445 microsoft-ds",
+    "tcp/464 kpasswd5",
+    "tcp/593 ncacn_http Microsoft Windows RPC over HTTP 1.0",
+    "tcp/636 tcpwrapped"
+  ],
+  "modules": {
+    "DNS Attacker": [
+      "tcp/53 domain Simple DNS Plus"
+    ],
+    "AD Attacker": [
+      "tcp/88 kerberos-sec Microsoft Windows Kerberos",
+      "tcp/135 msrpc Microsoft Windows RPC",
+      "tcp/139 netbios-ssn Microsoft Windows netbios-ssn",
+      "tcp/389 ldap Microsoft Windows Active Directory LDAP",
+      "tcp/464 kpasswd5",
+      "tcp/636 tcpwrapped"
+    ],
+    "Kerberos Attacker": [
+      "tcp/88 kerberos-sec Microsoft Windows Kerberos"
+    ],
+    "SMB Attacker": [
+      "tcp/139 netbios-ssn Microsoft Windows netbios-ssn",
+      "tcp/445 microsoft-ds"
+    ],
+    "LDAP Signing": [
+      "tcp/389 ldap Microsoft Windows Active Directory LDAP",
+      "tcp/636 tcpwrapped"
+    ]
+  },
+  "vulnerabilities": {
+    "tcp/53 domain Simple DNS Plus": [
+      {
+        "cve": "CVE-2020-1350",
+        "description": "CVE-2020-1350 (SigRed) \u2013 RCE",
+        "exploits": [],
+        "exploitdb_url": "https://www.exploit-db.com/search?cve=CVE-2020-1350"
+      }
+    ],
+    "tcp/389 ldap Microsoft Windows Active Directory LDAP": [
+      {
+        "cve": "CVE-2007-0040",
+        "description": "The LDAP service in Windows Active Directory in Microsoft Windows 2000 Server SP4, Server 2003 SP1 and SP2, Server 2003 ",
+        "exploits": [],
+        "exploitdb_url": "https://www.exploit-db.com/search?cve=CVE-2007-0040"
+      },
+      {
+        "cve": "CVE-2007-3028",
+        "description": "The LDAP service in Windows Active Directory in Microsoft Windows 2000 Server SP4 does not properly check \"the number of",
+        "exploits": [],
+        "exploitdb_url": "https://www.exploit-db.com/search?cve=CVE-2007-3028"
+      },
+      {
+        "cve": "CVE-2008-0088",
+        "description": "Unspecified vulnerability in Active Directory on Microsoft Windows 2000 and Windows Server 2003, and Active Directory Ap",
+        "exploits": [],
+        "exploitdb_url": "https://www.exploit-db.com/search?cve=CVE-2008-0088"
+      },
+      {
+        "cve": "CVE-2008-1445",
+        "description": "Active Directory on Microsoft Windows 2000 Server SP4, XP Professional SP2 and SP3, Server 2003 SP1 and SP2, and Server ",
+        "exploits": [],
+        "exploitdb_url": "https://www.exploit-db.com/search?cve=CVE-2008-1445"
+      },
+      {
+        "cve": "CVE-2008-4023",
+        "description": "Active Directory in Microsoft Windows 2000 SP4 does not properly allocate memory for (1) LDAP and (2) LDAPS requests, wh",
+        "exploits": [],
+        "exploitdb_url": "https://www.exploit-db.com/search?cve=CVE-2008-4023"
+      }
+    ],
+    "tcp/445 microsoft-ds": [
+      {
+        "cve": "CVE-2002-0597",
+        "description": "LANMAN service on Microsoft Windows 2000 allows remote attackers to cause a denial of service (CPU/memory exhaustion) vi",
+        "exploits": [],
+        "exploitdb_url": "https://www.exploit-db.com/search?cve=CVE-2002-0597"
+      }
+    ]
+  },
+  "raw_services": [
+    {
+      "port": 53,
+      "proto": "tcp",
+      "name": "domain",
+      "product": "Simple DNS Plus",
+      "version": "",
+      "extrainfo": "",
+      "script": {}
+    },
+    {
+      "port": 88,
+      "proto": "tcp",
+      "name": "kerberos-sec",
+      "product": "Microsoft Windows Kerberos",
+      "version": "",
+      "extrainfo": "server time: 2026-07-26 14:29:16Z",
+      "script": {}
+    },
+    {
+      "port": 135,
+      "proto": "tcp",
+      "name": "msrpc",
+      "product": "Microsoft Windows RPC",
+      "version": "",
+      "extrainfo": "",
+      "script": {}
+    },
+    {
+      "port": 139,
+      "proto": "tcp",
+      "name": "netbios-ssn",
+      "product": "Microsoft Windows netbios-ssn",
+      "version": "",
+      "extrainfo": "",
+      "script": {}
+    },
+    {
+      "port": 389,
+      "proto": "tcp",
+      "name": "ldap",
+      "product": "Microsoft Windows Active Directory LDAP",
+      "version": "",
+      "extrainfo": "Domain: test.lab0., Site: Default-First-Site-Name",
+      "script": {}
+    },
+    {
+      "port": 445,
+      "proto": "tcp",
+      "name": "microsoft-ds",
+      "product": "",
+      "version": "",
+      "extrainfo": "",
+      "script": {}
+    },
+    {
+      "port": 464,
+      "proto": "tcp",
+      "name": "kpasswd5",
+      "product": "",
+      "version": "",
+      "extrainfo": "",
+      "script": {}
+    },
+    {
+      "port": 593,
+      "proto": "tcp",
+      "name": "ncacn_http",
+      "product": "Microsoft Windows RPC over HTTP",
+      "version": "1.0",
+      "extrainfo": "",
+      "script": {}
+    },
+    {
+      "port": 636,
+      "proto": "tcp",
+      "name": "tcpwrapped",
+      "product": "",
+      "version": "",
+      "extrainfo": "",
+      "script": {}
+    }
+  ]
+}

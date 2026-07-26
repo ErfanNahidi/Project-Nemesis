@@ -1,14 +1,14 @@
-python3 
+python3
 
-python = "^3.11"
-scapy = "^2.5.0"
-termcolor = "^2.4.0"
-netifaces = "^0.11.0"
-rich 
+python
+scapy
+termcolor
+netifaces
+rich
 dns
 python-nmap
 requests
 tqdm
 colorama
-pyyaml 
+pyyaml
 jinja2

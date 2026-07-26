@@ -36,8 +36,6 @@ SCANNER_CORE = SCRIPT_DIR / "scanner" / "core.py"
 SCANNER_CLI  = SCRIPT_DIR / "scanner" / "cli.py"
 PIG_SCRIPT = SCRIPT_DIR / "DHCP" / "pig.py"
 DNSFORGE_DIR = SCRIPT_DIR / "DNS"
-ADSCAN_SCRIPT = SCRIPT_DIR / "AD" / "adscan.py"
-GHOSTLOCK_SCRIPT = SCRIPT_DIR / "SMB" / "ghostlock.py"
 SNIFFING_SCRIPT = SCRIPT_DIR / "sniffing" / "network_sniffer.py"
 
 
@@ -50,8 +48,6 @@ def verify_tools():
         "scanner/core.py": SCANNER_CORE,
         "scanner/cli.py":  SCANNER_CLI,
         "pig.py":          PIG_SCRIPT,
-        "adscan.py":       ADSCAN_SCRIPT,
-        "ghostlock.py":    GHOSTLOCK_SCRIPT,
         "network_sniffer.py": SNIFFING_SCRIPT,
         "DNS/ package":    DNSFORGE_DIR / "__init__.py",
     }
@@ -499,31 +495,45 @@ class DNSAttacks(AttackModule):
   [2] Basic relay (poison responses)
   [3] Stealth respond (custom domain + authoritative server)
   [4] Respond with ARP spoofing target
-  [5] Respond, no ARP spoofing
+  [5] Respond, no ARP spoofing (requires DNS module fix)
   [0] Back
 {Colors.RESET}""")
             choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
+
             if choice == "1":
                 pip = input(f"{Colors.CYAN}Poison IP: {Colors.RESET}").strip()
-                if pip: DNSAttacks.run(["-p", pip])
+                if pip:
+                    # Always require a target (workaround for --no-arp-spoof bug)
+                    tgt = input(f"{Colors.CYAN}Target IP for ARP spoofing (e.g. gateway): {Colors.RESET}").strip()
+                    if tgt:
+                        DNSAttacks.run(["-p", pip, "-t", tgt])
             elif choice == "2":
                 pip = input(f"{Colors.CYAN}Poison IP: {Colors.RESET}").strip()
-                if pip: DNSAttacks.run(["-p", pip, "relay"])
+                if pip:
+                    tgt = input(f"{Colors.CYAN}Target IP for ARP spoofing: {Colors.RESET}").strip()
+                    if tgt:
+                        DNSAttacks.run(["-p", pip, "-t", tgt, "relay"])
             elif choice == "3":
                 pip = input(f"{Colors.CYAN}Poison IP: {Colors.RESET}").strip()
                 dns_srv = input(f"{Colors.CYAN}Authoritative DNS server IP: {Colors.RESET}").strip()
                 domain = input(f"{Colors.CYAN}Victim domain: {Colors.RESET}").strip()
                 if pip and dns_srv and domain:
-                    DNSAttacks.run(["-p", pip, "-s", "-ds", dns_srv, "-d", domain])
+                    tgt = input(f"{Colors.CYAN}Target IP for ARP spoofing: {Colors.RESET}").strip()
+                    if tgt:
+                        DNSAttacks.run(["-p", pip, "-s", "-ds", dns_srv, "-d", domain, "-t", tgt])
             elif choice == "4":
                 pip = input(f"{Colors.CYAN}Poison IP: {Colors.RESET}").strip()
                 tgt = input(f"{Colors.CYAN}Target IP for ARP spoofing: {Colors.RESET}").strip()
-                if pip and tgt: DNSAttacks.run(["-p", pip, "-t", tgt])
+                if pip and tgt:
+                    DNSAttacks.run(["-p", pip, "-t", tgt])
             elif choice == "5":
-                pip = input(f"{Colors.CYAN}Poison IP: {Colors.RESET}").strip()
-                if pip: DNSAttacks.run(["-p", pip, "--no-arp-spoof"])
-            elif choice == "0": break
-            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
+                print(f"{Colors.YELLOW}Warning: --no-arp-spoof causes a known bug in dnsforge.{Colors.RESET}")
+                print("Please patch DNS/__main__.py or use a real target for now.")
+                input("Press Enter to return...")
+            elif choice == "0":
+                break
+            else:
+                print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
     @staticmethod
     def advanced_wizard():
@@ -540,23 +550,37 @@ class DNSAttacks(AttackModule):
             return
         args.extend(["-p", pip])
         qnames = input(f"{Colors.CYAN}DNS query name(s) (comma separated): {Colors.RESET}").strip()
-        if qnames: args.extend(["-q", qnames])
+        if qnames:
+            args.extend(["-q", qnames])
         ttl = input(f"{Colors.CYAN}TTL in seconds: {Colors.RESET}").strip()
-        if ttl: args.extend(["-ttl", ttl])
+        if ttl:
+            args.extend(["-ttl", ttl])
         if input(f"{Colors.CYAN}Enable stealth mode? [y/N]: {Colors.RESET}").strip().lower() == "y":
             args.append("-s")
             dns_srv = input(f"{Colors.CYAN}  Authoritative DNS server IP: {Colors.RESET}").strip()
-            if dns_srv: args.extend(["-ds", dns_srv])
+            if dns_srv:
+                args.extend(["-ds", dns_srv])
             domain = input(f"{Colors.CYAN}  Victim domain: {Colors.RESET}").strip()
-            if domain: args.extend(["-d", domain])
+            if domain:
+                args.extend(["-d", domain])
         tgt = input(f"{Colors.CYAN}ARP spoofing target IP (leave empty to skip): {Colors.RESET}").strip()
         if tgt:
             args.extend(["-t", tgt])
         elif input(f"{Colors.CYAN}Use target file instead? [y/N]: {Colors.RESET}").strip().lower() == "y":
             tfile = input(f"{Colors.CYAN}Path to target file: {Colors.RESET}").strip()
-            if tfile: args.extend(["-tf", tfile])
+            if tfile:
+                args.extend(["-tf", tfile])
         if input(f"{Colors.CYAN}Disable ARP spoofing completely? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("--no-arp-spoof")
+            # Warn about the bug and suggest a target
+            print(f"{Colors.YELLOW}Warning: --no-arp-spoof is buggy. Using it may crash.{Colors.RESET}")
+            if input("Do you want to force --no-arp-spoof anyway? [y/N]: ").strip().lower() == "y":
+                args.append("--no-arp-spoof")
+            else:
+                alt = input(f"{Colors.CYAN}Fallback target IP: {Colors.RESET}").strip()
+                if alt:
+                    args.extend(["-t", alt])
+                else:
+                    print("No target given, aborting ARP option.")
         if input(f"{Colors.CYAN}Verbose output? [y/N]: {Colors.RESET}").strip().lower() == "y":
             args.append("-v")
         DNSAttacks._final_review(args + [mode], lambda a: DNSAttacks.run(a))
@@ -574,222 +598,16 @@ class DNSAttacks(AttackModule):
   [0] Return to main menu
 {Colors.RESET}""")
             choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
-            if choice == "1": DNSAttacks.quick_menu()
-            elif choice == "2": DNSAttacks.advanced_wizard()
-            elif choice == "3": AttackModule.raw_args(DNSAttacks.run, "dnsforge arguments")
-            elif choice == "0": break
-            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
-
-
-# ----------------------------------------------------------------------
-# Active Directory Attacks
-# ----------------------------------------------------------------------
-class ADAttacks(AttackModule):
-    @staticmethod
-    def run(args):
-        cmd = [str(ADSCAN_SCRIPT)] + args
-        run_attack(cmd, "Active Directory")
-
-    @staticmethod
-    def quick_menu():
-        while True:
-            clear_screen()
-            logo()
-            banner("Quick AD Attack Profiles")
-            print(f"""{Colors.YELLOW}
-  [1] Kerberoasting (request TGS)
-  [2] AS-REP Roasting (users without pre-auth)
-  [3] LDAP enumeration (all users)
-  [4] BloodHound data collection
-  [5] Password spraying (single password)
-  [0] Back
-{Colors.RESET}""")
-            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
             if choice == "1":
-                target = input(f"{Colors.CYAN}Domain Controller IP: {Colors.RESET}").strip()
-                domain = input(f"{Colors.CYAN}Domain: {Colors.RESET}").strip()
-                user = input(f"{Colors.CYAN}Username: {Colors.RESET}").strip()
-                password = input(f"{Colors.CYAN}Password: {Colors.RESET}").strip()
-                if target and domain and user and password:
-                    ADAttacks.run(["kerberoast", "-dc-ip", target, "-d", domain, "-u", user, "-p", password])
+                DNSAttacks.quick_menu()
             elif choice == "2":
-                target = input(f"{Colors.CYAN}Domain Controller IP: {Colors.RESET}").strip()
-                domain = input(f"{Colors.CYAN}Domain: {Colors.RESET}").strip()
-                if target and domain: ADAttacks.run(["asreproast", "-dc-ip", target, "-d", domain])
+                DNSAttacks.advanced_wizard()
             elif choice == "3":
-                target = input(f"{Colors.CYAN}Domain Controller IP: {Colors.RESET}").strip()
-                domain = input(f"{Colors.CYAN}Domain: {Colors.RESET}").strip()
-                user = input(f"{Colors.CYAN}Username: {Colors.RESET}").strip()
-                password = input(f"{Colors.CYAN}Password: {Colors.RESET}").strip()
-                if target and domain and user and password:
-                    ADAttacks.run(["ldap", "-dc-ip", target, "-d", domain, "-u", user, "-p", password, "--users"])
-            elif choice == "4":
-                target = input(f"{Colors.CYAN}Domain Controller IP: {Colors.RESET}").strip()
-                domain = input(f"{Colors.CYAN}Domain: {Colors.RESET}").strip()
-                user = input(f"{Colors.CYAN}Username: {Colors.RESET}").strip()
-                password = input(f"{Colors.CYAN}Password: {Colors.RESET}").strip()
-                if target and domain and user and password:
-                    ADAttacks.run(["bloodhound", "-dc-ip", target, "-d", domain, "-u", user, "-p", password])
-            elif choice == "5":
-                target = input(f"{Colors.CYAN}Domain Controller IP: {Colors.RESET}").strip()
-                domain = input(f"{Colors.CYAN}Domain: {Colors.RESET}").strip()
-                spray_pass = input(f"{Colors.CYAN}Password to spray: {Colors.RESET}").strip()
-                userfile = input(f"{Colors.CYAN}User list file: {Colors.RESET}").strip()
-                if target and domain and spray_pass and userfile:
-                    ADAttacks.run(["spray", "-dc-ip", target, "-d", domain, "-p", spray_pass, "-U", userfile])
-            elif choice == "0": break
-            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
-
-    @staticmethod
-    def advanced_wizard():
-        args = []
-        clear_screen()
-        logo()
-        banner("Advanced AD Attack Configuration")
-        print(f"{Colors.MUTED}Configure each option. Leave empty to skip.{Colors.RESET}\n")
-        subcmd = input(f"{Colors.CYAN}Attack type (kerberoast/asreproast/ldap/bloodhound/spray): {Colors.RESET}").strip()
-        if subcmd:
-            args.append(subcmd)
-        else:
-            print(f"{Colors.RED}Attack type is required.{Colors.RESET}")
-            return
-        target = input(f"{Colors.CYAN}Domain Controller IP (-dc-ip): {Colors.RESET}").strip()
-        if target: args.extend(["-dc-ip", target])
-        domain = input(f"{Colors.CYAN}Domain (-d): {Colors.RESET}").strip()
-        if domain: args.extend(["-d", domain])
-        user = input(f"{Colors.CYAN}Username (-u): {Colors.RESET}").strip()
-        if user: args.extend(["-u", user])
-        password = input(f"{Colors.CYAN}Password (-p): {Colors.RESET}").strip()
-        if password: args.extend(["-p", password])
-        hashes = input(f"{Colors.CYAN}NTLM hash (optional, overrides password): {Colors.RESET}").strip()
-        if hashes: args.extend(["--hashes", hashes])
-        user_file = input(f"{Colors.CYAN}User list file (-U): {Colors.RESET}").strip()
-        if user_file: args.extend(["-U", user_file])
-        if input(f"{Colors.CYAN}Verbose output? [y/N]: {Colors.RESET}").strip().lower() == "y":
-            args.append("-v")
-        ADAttacks._final_review(args, lambda a: ADAttacks.run(a))
-
-    @staticmethod
-    def main_menu():
-        while True:
-            clear_screen()
-            logo()
-            banner("Active Directory Attack Lab (adscan)")
-            print(f"""{Colors.YELLOW}
-  [1] Quick Attack (presets)
-  [2] Advanced Configuration (wizard)
-  [3] Enter raw adscan arguments
-  [0] Return to main menu
-{Colors.RESET}""")
-            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
-            if choice == "1": ADAttacks.quick_menu()
-            elif choice == "2": ADAttacks.advanced_wizard()
-            elif choice == "3": AttackModule.raw_args(ADAttacks.run, "adscan arguments")
-            elif choice == "0": break
-            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
-
-
-# ----------------------------------------------------------------------
-# SMB Ghostlock Attacks
-# ----------------------------------------------------------------------
-class SMBAttacks(AttackModule):
-    @staticmethod
-    def run(args):
-        cmd = ["python3", str(GHOSTLOCK_SCRIPT)] + args
-        run_attack(cmd, "SMB Ghostlock")
-
-    @staticmethod
-    def quick_menu():
-        while True:
-            clear_screen()
-            logo()
-            banner("Quick SMB Lock Attacks (Ghostlock)")
-            print(f"""{Colors.YELLOW}
-  [1] Manual UNC path lock (files in folder)
-  [2] Auto-discover network shares and lock
-  [3] Directory lock (single handle)
-  [0] Back
-{Colors.RESET}""")
-            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
-            if choice == "1":
-                unc = input(f"{Colors.CYAN}Target UNC path (e.g. \\\\server\\share\\folder): {Colors.RESET}").strip()
-                if unc:
-                    SMBAttacks.run([unc, "--existing-folder", "--confirm-existing-lock", "--hold-indefinite"])
-                else:
-                    print(f"{Colors.RED}UNC path required.{Colors.RESET}")
-            elif choice == "2":
-                print(f"{Colors.YELLOW}Launching interactive auto-discovery...{Colors.RESET}")
-                SMBAttacks.run([])
-            elif choice == "3":
-                unc = input(f"{Colors.CYAN}Target directory UNC path: {Colors.RESET}").strip()
-                if unc:
-                    SMBAttacks.run([unc, "--existing-folder", "--confirm-existing-lock", "--hold-indefinite", "--dir-lock"])
-                else:
-                    print(f"{Colors.RED}Directory path required.{Colors.RESET}")
-            elif choice == "0": break
-            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
-
-    @staticmethod
-    def advanced_wizard():
-        args = []
-        clear_screen()
-        logo()
-        banner("Advanced SMB Ghostlock Configuration")
-        print(f"{Colors.MUTED}Build your ghostlock command. Leave empty to skip optional flags.{Colors.RESET}\n")
-        mode = input(
-            f"{Colors.CYAN}Select locking mode:\n  [1] File-level lock\n  [2] Directory lock\n  [3] Interactive auto-discover\nChoice: {Colors.RESET}"
-        ).strip()
-        if mode == "3":
-            print("Launching interactive mode...")
-            SMBAttacks.run([])
-            return
-        unc = input(f"{Colors.CYAN}Target UNC path: {Colors.RESET}").strip()
-        if not unc:
-            print(f"{Colors.RED}UNC path is required.{Colors.RESET}")
-            return
-        args.append(unc)
-        if input(f"{Colors.CYAN}Confirm existing .ghostlock_authorized file? [Y/n]: {Colors.RESET}").strip().lower() != "n":
-            args.append("--confirm-existing-lock")
-        if input(f"{Colors.CYAN}Use existing folder safety check? [Y/n]: {Colors.RESET}").strip().lower() != "n":
-            args.append("--existing-folder")
-        if mode == "1":
-            if input(f"{Colors.CYAN}Hold indefinitely? [y/N]: {Colors.RESET}").strip().lower() == "y":
-                args.append("--hold-indefinite")
+                AttackModule.raw_args(DNSAttacks.run, "dnsforge arguments")
+            elif choice == "0":
+                break
             else:
-                secs = input(f"{Colors.CYAN}Hold duration in seconds: {Colors.RESET}").strip()
-                if secs: args.extend(["--hold-seconds", secs])
-            locks = input(f"{Colors.CYAN}Number of file locks (default many): {Colors.RESET}").strip()
-            if locks: args.extend(["--locks", locks])
-            victims = input(f"{Colors.CYAN}Number of victim threads: {Colors.RESET}").strip()
-            if victims: args.extend(["--victims", victims])
-        elif mode == "2":
-            args.append("--dir-lock")
-            if input(f"{Colors.CYAN}Hold indefinitely? [y/N]: {Colors.RESET}").strip().lower() == "y":
-                args.append("--hold-indefinite")
-            else:
-                secs = input(f"{Colors.CYAN}Hold duration in seconds: {Colors.RESET}").strip()
-                if secs: args.extend(["--hold-seconds", secs])
-        SMBAttacks._final_review(args, lambda a: SMBAttacks.run(a))
-
-    @staticmethod
-    def main_menu():
-        while True:
-            clear_screen()
-            logo()
-            banner("SMB Attack Lab (Ghostlock)")
-            print(f"""{Colors.YELLOW}
-  [1] Quick Lock (presets)
-  [2] Advanced Configuration (wizard)
-  [3] Enter raw ghostlock arguments
-  [0] Return to main menu
-{Colors.RESET}""")
-            choice = input(f"{Colors.CYAN}Choice: {Colors.RESET}").strip()
-            if choice == "1": SMBAttacks.quick_menu()
-            elif choice == "2": SMBAttacks.advanced_wizard()
-            elif choice == "3": AttackModule.raw_args(SMBAttacks.run, "ghostlock arguments")
-            elif choice == "0": break
-            else: print(f"{Colors.RED}Invalid option.{Colors.RESET}")
-
+                print(f"{Colors.RED}Invalid option.{Colors.RESET}")
 
 # ----------------------------------------------------------------------
 # Sniffing Lab
@@ -1011,19 +829,12 @@ MODULE_MAP = {
     "3": DNSAttacks.main_menu,
     "dns": DNSAttacks.main_menu,
     "dnsattack": DNSAttacks.main_menu,
-    "4": ADAttacks.main_menu,
-    "ad": ADAttacks.main_menu,
-    "adattack": ADAttacks.main_menu,
-    "5": SMBAttacks.main_menu,
-    "smb": SMBAttacks.main_menu,
-    "smbattack": SMBAttacks.main_menu,
-    "ghostlock": SMBAttacks.main_menu,
     "6": SniffingAttacks.main_menu,
     "sniffing": SniffingAttacks.main_menu,
     "sniff": SniffingAttacks.main_menu,
-    "7": Update.main_menu,
+    "8": Update.main_menu,
     "update": Update.main_menu,
-    "8": About.main_menu,
+    "9": About.main_menu,
     "about": About.main_menu,
 }
 
@@ -1071,11 +882,14 @@ def main():
   [1] Service Scanner
   [2] DHCP Attacker
   [3] DNS Attacker
-  [4] Active Directory Attacker
-  [5] SMB Attacker
-  [6] Sniffing
-  [7] Update & Maintenance
-  [8] About
+  [4] DNS Spoofing
+  [5] Active Directory Spoofing
+  [6] SMB Spoofing
+  [XXXX] kerberos
+  [XXXF] Remote Sevice
+  [7] Sniffing
+  [8] Update & Maintenance
+  [9] About
   [0] Exit
 {Colors.RESET}""")
             choice = input(f"{Colors.CYAN}Select a module: {Colors.RESET}").strip()
