@@ -1,1 +1,1 @@
-Logo.png
+{Logo.png}
