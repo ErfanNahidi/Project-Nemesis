@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # ----------------------------------------------------------------------
-# Project Nemesis – Unified Dashboard (with fixed launcher)
+# Project Nemesis – Dashboard with tool presence check & clone/run logic
 # ----------------------------------------------------------------------
 
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="1.0.0"
 
-# ---- get the real path of this script (even if run via symlink) ----
+# ---- real path of this script (works through symlinks) ----
 if command -v realpath &>/dev/null; then
     SCRIPT_REALPATH="$(realpath "$0")"
 elif command -v readlink &>/dev/null; then
     SCRIPT_REALPATH="$(readlink -f "$0")"
 else
-    # Fallback: expand to absolute path manually
     SCRIPT_REALPATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 fi
 SCRIPT_DIR="$(dirname "$SCRIPT_REALPATH")"
@@ -91,33 +90,87 @@ pause() {
 }
 
 # ----------------------------------------------------------------------
-# Cloning helper (for Scanner / DHCP Havoc)
+# Run a tool (sudo python3 <dir>/cli.py)
 # ----------------------------------------------------------------------
-safe_clone() {
-    local repo_url="$1"
-    local repo_name="$(basename "$repo_url" .git)"
+run_tool() {
+    local tool_dir="$1"
+    local cli_path="${tool_dir}/cli.py"
+
+    if [[ ! -f "$cli_path" ]]; then
+        echo -e "${RED}No 'cli.py' found in ${tool_dir}.${RESET}"
+        echo "Cannot launch the tool."
+        pause
+        return 1
+    fi
+
     clear_screen
     logo
-    banner "Clone Repository"
-    echo -e "${CYAN}Repository: ${repo_url}${RESET}"
-    echo -e "${CYAN}Target: $(pwd)/${repo_name}${RESET}"
-    if [[ -d "$repo_name" ]]; then
-        echo -e "\n${YELLOW}Directory '${repo_name}' already exists.${RESET}"
-        read -rp "Overwrite? (yes/no): " ans
-        [[ "${ans,,}" =~ ^(y|yes)$ ]] || { echo -e "${MUTED}Clone skipped.${RESET}"; pause; return; }
-        rm -rf "$repo_name" || { echo -e "${RED}Failed to remove.${RESET}"; pause; return; }
-    fi
-    echo -e "${CYAN}Cloning...${RESET}"
-    if git clone "$repo_url"; then
-        echo -e "${GREEN}Clone successful.${RESET}"
-    else
-        echo -e "${RED}Clone failed.${RESET}"
-    fi
+    banner "Running $(basename "$tool_dir")"
+    echo -e "${MUTED}Press Ctrl+C to stop and return to the dashboard.${RESET}\n"
+    sudo python3 "$cli_path" || echo -e "\n${RED}The tool exited with an error.${RESET}"
     pause
 }
 
 # ----------------------------------------------------------------------
-# LAUNCHER MANAGEMENT (INSTALL / REMOVE / UPDATE)
+# Smart tool handler: check directory -> clone / run / reclone
+# ----------------------------------------------------------------------
+tool_handler() {
+    local repo_url="$1"
+    local repo_name="$(basename "$repo_url" .git)"   # e.g. Nemesis-Scanner
+
+    while true; do
+        clear_screen
+        logo
+        banner "${repo_name}"
+
+        if [[ -d "$repo_name" ]]; then
+            # Tool directory already exists – offer run / reclone
+            echo -e "${GREEN}Tool directory found: $(pwd)/${repo_name}${RESET}"
+            echo
+            echo -e "${YELLOW}  [1] Run tool${RESET}"
+            echo -e "${YELLOW}  [2] Reclone (update)${RESET}"
+            echo -e "${YELLOW}  [0] Back to main menu${RESET}"
+            read -rp $'\n'"${CYAN}Choice: ${RESET}" choice
+            case "$choice" in
+                1) run_tool "$repo_name" ;;
+                2)
+                    echo -e "${RED}This will delete '${repo_name}' and re-clone.${RESET}"
+                    read -rp "Proceed? (yes/no): " ans
+                    if [[ "${ans,,}" =~ ^(y|yes)$ ]]; then
+                        rm -rf "$repo_name"
+                        echo -e "${CYAN}Re-cloning ${repo_url}...${RESET}"
+                        if git clone "$repo_url"; then
+                            echo -e "${GREEN}Clone successful.${RESET}"
+                            read -rp "Run it now? (yes/no): " run_ans
+                            [[ "${run_ans,,}" =~ ^(y|yes)$ ]] && run_tool "$repo_name"
+                        else
+                            echo -e "${RED}Clone failed.${RESET}"
+                        fi
+                    else
+                        echo -e "${MUTED}Reclone cancelled.${RESET}"
+                    fi
+                    ;;
+                0) break ;;
+                *) echo -e "${RED}Invalid option.${RESET}" && sleep 1 ;;
+            esac
+        else
+            # Directory does not exist – clone it
+            echo -e "${YELLOW}Tool not found locally.${RESET}"
+            echo -e "${CYAN}Cloning from ${repo_url}...${RESET}"
+            if git clone "$repo_url"; then
+                echo -e "${GREEN}Clone successful.${RESET}"
+                read -rp "Run it now? (yes/no): " run_ans
+                [[ "${run_ans,,}" =~ ^(y|yes)$ ]] && run_tool "$repo_name"
+            else
+                echo -e "${RED}Clone failed.${RESET}"
+            fi
+            break   # after clone (or failure), return to main menu
+        fi
+    done
+}
+
+# ----------------------------------------------------------------------
+# Launcher management (unchanged – same as previous fixed version)
 # ----------------------------------------------------------------------
 LAUNCHER_PATH="/usr/local/bin/nemesis"
 OFFICIAL_REMOTE="https://github.com/ErfanNahidi/Project-Nemesis"
@@ -127,30 +180,27 @@ launcher_install() {
     logo
     banner "Install Nemesis Launcher"
 
-    # 1. Ensure THIS script is executable
+    # Ensure THIS script is executable
     if [[ ! -x "$SCRIPT_REALPATH" ]]; then
         echo -e "${YELLOW}Making this script executable...${RESET}"
         chmod +x "$SCRIPT_REALPATH" || {
-            echo -e "${RED}Failed to set execute permission on $SCRIPT_REALPATH.${RESET}"
+            echo -e "${RED}Failed to set execute permission.${RESET}"
             pause
             return
         }
     fi
 
-    # 2. Check if a launcher already exists
     if [[ -e "$LAUNCHER_PATH" ]] || [[ -L "$LAUNCHER_PATH" ]]; then
-        # Check if the existing symlink points to a non-executable target
         if [[ -L "$LAUNCHER_PATH" ]]; then
             local target
             target=$(readlink -f "$LAUNCHER_PATH" 2>/dev/null || readlink "$LAUNCHER_PATH")
             if [[ ! -x "$target" ]]; then
-                echo -e "${YELLOW}Existing symlink points to a non-executable file.${RESET}"
-                echo -e "I will make it executable and keep the symlink."
+                echo -e "${YELLOW}Existing symlink points to non‑executable file. Fixing...${RESET}"
                 chmod +x "$target" 2>/dev/null && {
                     echo -e "${GREEN}Fixed. 'nemesis' should now work.${RESET}"
                     pause
                     return
-                } || echo -e "${RED}Failed to fix permissions.${RESET}"
+                }
             else
                 echo -e "${YELLOW}A working nemesis command already exists.${RESET}"
                 read -rp "Overwrite? (yes/no): " ans
@@ -158,7 +208,6 @@ launcher_install() {
                 sudo rm -f "$LAUNCHER_PATH"
             fi
         else
-            # It's a regular file, not a symlink – ask to replace
             echo -e "${YELLOW}A file (not a symlink) exists at ${LAUNCHER_PATH}${RESET}"
             read -rp "Overwrite? (yes/no): " ans
             [[ "${ans,,}" =~ ^(y|yes)$ ]] || { echo -e "${MUTED}Installation cancelled.${RESET}"; pause; return; }
@@ -166,7 +215,6 @@ launcher_install() {
         fi
     fi
 
-    # 3. Create fresh symlink
     echo -e "${CYAN}Creating symlink to: ${SCRIPT_REALPATH}${RESET}"
     if sudo ln -s "$SCRIPT_REALPATH" "$LAUNCHER_PATH"; then
         echo -e "${GREEN}Installation successful!${RESET}"
@@ -210,7 +258,6 @@ launcher_update() {
         return
     fi
 
-    # Check remote origin
     local current_remote
     current_remote=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)
 
@@ -236,7 +283,7 @@ launcher_update() {
     if git -C "$SCRIPT_DIR" pull; then
         echo -e "${GREEN}Update successful.${RESET}"
     else
-        echo -e "${RED}Update failed. Check network or repository state.${RESET}"
+        echo -e "${RED}Update failed.${RESET}"
     fi
     pause
 }
@@ -264,7 +311,7 @@ ${RESET}"
 }
 
 # ----------------------------------------------------------------------
-# About menus
+# About menus (unchanged)
 # ----------------------------------------------------------------------
 ABOUT_ME="I'm Erfan Nahidi
 Virtualization & Infrastructure Administrator
@@ -357,8 +404,8 @@ ${RESET}"
                 echo -e "${MUTED}Stay curious. Stay authorized.${RESET}"
                 exit 0 ;;
             1) launcher_menu ;;
-            2) safe_clone "https://github.com/ErfanNahidi/Nemesis-Scanner" ;;
-            3) safe_clone "https://github.com/ErfanNahidi/Nemesis-DHCP-Havoc" ;;
+            2) tool_handler "https://github.com/ErfanNahidi/Nemesis-Scanner" ;;
+            3) tool_handler "https://github.com/ErfanNahidi/Nemesis-DHCP-Havoc" ;;
             9) about_menu ;;
             *) echo -e "${RED}Please select a listed option.${RESET}" && sleep 1 ;;
         esac
