@@ -393,6 +393,11 @@ main() {
   [1] Nemesis Launcher (install/update/remove)
   [2] Scanner
   [3] DHCP Havoc
+  [4] DoS (Empty)
+  [5] Sniffer (Empty)
+  [6] SMB (Empty)
+  [7] AD (Empty)
+  [8] RCP (Empty)
   [9] About
   [0] Exit
 ${RESET}"
