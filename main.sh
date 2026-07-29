@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ----------------------------------------------------------------------
-# Project Nemesis – Dashboard with tool presence check & clone/run logic
+# Project Nemesis – Dashboard (Launcher Update = dashboard only)
 # ----------------------------------------------------------------------
 
 set -euo pipefail
@@ -170,7 +170,7 @@ tool_handler() {
 }
 
 # ----------------------------------------------------------------------
-# Launcher management (unchanged – same as previous fixed version)
+# Launcher: Install / Remove / Update (dashboard only)
 # ----------------------------------------------------------------------
 LAUNCHER_PATH="/usr/local/bin/nemesis"
 OFFICIAL_REMOTE="https://github.com/ErfanNahidi/Project-Nemesis"
@@ -248,7 +248,7 @@ launcher_remove() {
 launcher_update() {
     clear_screen
     logo
-    banner "Update Nemesis"
+    banner "Update Nemesis Dashboard"
 
     if [[ ! -d "$SCRIPT_DIR/.git" ]]; then
         echo -e "${YELLOW}Current directory is not a Git repository.${RESET}"
@@ -271,7 +271,6 @@ launcher_update() {
         if [[ "${ans,,}" =~ ^(y|yes)$ ]]; then
             echo -e "${CYAN}Updating remote...${RESET}"
             git -C "$SCRIPT_DIR" remote set-url origin "$OFFICIAL_REMOTE"
-            current_remote="$OFFICIAL_REMOTE"
         else
             echo -e "${MUTED}Update cancelled.${RESET}"
             pause
@@ -279,11 +278,11 @@ launcher_update() {
         fi
     fi
 
-    echo -e "${CYAN}Pulling latest changes from ${OFFICIAL_REMOTE}...${RESET}"
+    echo -e "${CYAN}Pulling latest dashboard code...${RESET}"
     if git -C "$SCRIPT_DIR" pull; then
-        echo -e "${GREEN}Update successful.${RESET}"
+        echo -e "${GREEN}Dashboard updated successfully.${RESET}"
     else
-        echo -e "${RED}Update failed.${RESET}"
+        echo -e "${RED}Pull failed. Check your network or repository state.${RESET}"
     fi
     pause
 }
@@ -296,7 +295,7 @@ launcher_menu() {
         echo -e "${YELLOW}
   [1] Install   – make 'nemesis' available system-wide
   [2] Remove    – remove 'nemesis' command
-  [3] Update    – pull latest from official GitHub repo
+  [3] Update    – pull latest dashboard from GitHub
   [0] Back to main menu
 ${RESET}"
         read -rp $'\n'"${CYAN}Choice: ${RESET}" choice
@@ -311,7 +310,7 @@ ${RESET}"
 }
 
 # ----------------------------------------------------------------------
-# About menus (unchanged)
+# About menus
 # ----------------------------------------------------------------------
 ABOUT_ME="I'm Erfan Nahidi
 Virtualization & Infrastructure Administrator
