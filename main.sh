@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="0.1.0"
 
 # ---- real path of this script (works through symlinks) ----
 if command -v realpath &>/dev/null; then
