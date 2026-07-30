@@ -90,6 +90,24 @@ pause() {
 }
 
 # ----------------------------------------------------------------------
+# Install Python dependencies if requirements.txt exists
+# ----------------------------------------------------------------------
+install_deps() {
+    local dir="$1"
+    local req="$dir/requirements.txt"
+    if [[ -f "$req" ]]; then
+        echo -e "${CYAN}Installing Python dependencies from $req...${RESET}"
+        if command -v pip3 &>/dev/null; then
+            sudo pip3 install -r "$req" || echo -e "${RED}Failed to install dependencies.${RESET}"
+        elif command -v pip &>/dev/null; then
+            sudo pip install -r "$req" || echo -e "${RED}Failed to install dependencies.${RESET}"
+        else
+            echo -e "${RED}pip not found. Please install dependencies manually.${RESET}"
+        fi
+    fi
+}
+
+# ----------------------------------------------------------------------
 # Run a tool (sudo python3 <dir>/cli.py)
 # ----------------------------------------------------------------------
 run_tool() {
@@ -107,6 +125,10 @@ run_tool() {
     logo
     banner "Running $(basename "$tool_dir")"
     echo -e "${MUTED}Press Ctrl+C to stop and return to the dashboard.${RESET}\n"
+
+    # Install dependencies before running
+    install_deps "$tool_dir"
+
     sudo python3 "$cli_path" || echo -e "\n${RED}The tool exited with an error.${RESET}"
     pause
 }
@@ -141,6 +163,7 @@ tool_handler() {
                         echo -e "${CYAN}Re-cloning ${repo_url}...${RESET}"
                         if git clone "$repo_url"; then
                             echo -e "${GREEN}Clone successful.${RESET}"
+                            install_deps "$repo_name"
                             read -rp "Run it now? (yes/no): " run_ans
                             [[ "${run_ans,,}" =~ ^(y|yes)$ ]] && run_tool "$repo_name"
                         else
@@ -159,6 +182,7 @@ tool_handler() {
             echo -e "${CYAN}Cloning from ${repo_url}...${RESET}"
             if git clone "$repo_url"; then
                 echo -e "${GREEN}Clone successful.${RESET}"
+                install_deps "$repo_name"
                 read -rp "Run it now? (yes/no): " run_ans
                 [[ "${run_ans,,}" =~ ^(y|yes)$ ]] && run_tool "$repo_name"
             else
