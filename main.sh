@@ -98,9 +98,9 @@ install_deps() {
     if [[ -f "$req" ]]; then
         echo -e "${CYAN}Installing Python dependencies from $req...${RESET}"
         if command -v pip3 &>/dev/null; then
-            sudo pip3 install -r "$req" || echo -e "${RED}Failed to install dependencies.${RESET}"
+            pip3 install -r "$req" || echo -e "${RED}Failed to install dependencies.${RESET}"
         elif command -v pip &>/dev/null; then
-            sudo pip install -r "$req" || echo -e "${RED}Failed to install dependencies.${RESET}"
+            pip install -r "$req" || echo -e "${RED}Failed to install dependencies.${RESET}"
         else
             echo -e "${RED}pip not found. Please install dependencies manually.${RESET}"
         fi
@@ -417,11 +417,11 @@ main() {
   [1] Nemesis Launcher (install/update/remove)
   [2] Scanner
   [3] DHCP Havoc
-  [4] DoS (Empty)
-  [5] Sniffer (Empty)
-  [6] SMB (Empty)
-  [7] AD (Empty)
-  [8] RCP (Empty)
+  [4] DoS
+  [5] Sniffer
+  [6] SMB Phantom (Empty)
+  [7] AD Reaper (Empty)
+  [8] DNS (Empty)
   [9] About
   [0] Exit
 ${RESET}"
@@ -434,6 +434,11 @@ ${RESET}"
             1) launcher_menu ;;
             2) tool_handler "https://github.com/ErfanNahidi/Nemesis-Scanner" ;;
             3) tool_handler "https://github.com/ErfanNahidi/Nemesis-DHCP-Havoc" ;;
+            4) tool_handler "https://github.com/ErfanNahidi/Nemesis-DoS-Engine" ;;
+            5) tool_handler "https://github.com/ErfanNahidi/Nemesis-Sniffiner" ;;
+            6) tool_handler "https://github.com/ErfanNahidi/Nemesis-SMB-Phantom" ;;
+            7) tool_handler "https://github.com/ErfanNahidi/Nemesis-AD-Reaper" ;;
+            8) tool_handler "" ;;
             9) about_menu ;;
             *) echo -e "${RED}Please select a listed option.${RESET}" && sleep 1 ;;
         esac
