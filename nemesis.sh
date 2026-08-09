@@ -28,11 +28,11 @@ fi
 MODULES_DIR="$SCRIPT_DIR/modules"
 
 # ---- source sub-menus ----
+source "$SCRIPT_DIR/scripts/launcher_core.sh"
+source "$SCRIPT_DIR/scripts/launcher_update.sh"
 source "$SCRIPT_DIR/scripts/general.sh"
 source "$SCRIPT_DIR/scripts/cve.sh"
-source "$SCRIPT_DIR/scripts/launcher.sh"
 source "$SCRIPT_DIR/scripts/about.sh"
-
 # ---- main dashboard ----
 main() {
     case "${1:-}" in
