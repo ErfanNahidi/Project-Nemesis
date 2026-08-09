@@ -27,7 +27,6 @@ else
     BOTR='+'
 fi
 
-# ---- Utility functions ----
 clear_screen() {
     if command -v clear &>/dev/null; then
         clear
@@ -70,9 +69,6 @@ pause() {
     read -rp $'\n'"${MUTED}Press Enter to return...${RESET}"
 }
 
-# ---- Tool management ----
-MODULES_DIR=""   # will be set by the main script
-
 install_deps() {
     local dir="$1"
     local req="$dir/requirements.txt"
@@ -90,22 +86,38 @@ install_deps() {
 
 run_tool() {
     local tool_dir="$1"
-    local cli_path="${tool_dir}/cli.py"
+    local py_main="${tool_dir}/main.py"
+    local py_cli="${tool_dir}/cli.py"
+    local sh_main="${tool_dir}/main.sh"
 
-    if [[ ! -f "$cli_path" ]]; then
-        echo -e "${RED}No 'cli.py' found in ${tool_dir}.${RESET}"
+    # prefer main.py, then cli.py, then main.sh
+    if [[ -f "$py_main" ]]; then
+        echo -e "${CYAN}Launching Python module: ${py_main}${RESET}"
+        clear_screen
+        logo
+        banner "Running $(basename "$tool_dir")"
+        echo -e "${MUTED}Press Ctrl+C to stop and return to the dashboard.${RESET}\n"
+        install_deps "$tool_dir"
+        sudo python3 "$py_main" || echo -e "\n${RED}The tool exited with an error.${RESET}"
+    elif [[ -f "$py_cli" ]]; then
+        echo -e "${CYAN}Launching Python module: ${py_cli}${RESET}"
+        clear_screen
+        logo
+        banner "Running $(basename "$tool_dir")"
+        echo -e "${MUTED}Press Ctrl+C to stop and return to the dashboard.${RESET}\n"
+        install_deps "$tool_dir"
+        sudo python3 "$py_cli" || echo -e "\n${RED}The tool exited with an error.${RESET}"
+    elif [[ -f "$sh_main" ]]; then
+        echo -e "${CYAN}Launching Bash module: ${sh_main}${RESET}"
+        clear_screen
+        logo
+        banner "Running $(basename "$tool_dir")"
+        echo -e "${MUTED}Press Ctrl+C to stop and return to the dashboard.${RESET}\n"
+        sudo bash "$sh_main" || echo -e "\n${RED}The tool exited with an error.${RESET}"
+    else
+        echo -e "${RED}No 'main.py', 'cli.py' or 'main.sh' found in ${tool_dir}.${RESET}"
         echo "Cannot launch the tool."
-        pause
-        return 1
     fi
-
-    clear_screen
-    logo
-    banner "Running $(basename "$tool_dir")"
-    echo -e "${MUTED}Press Ctrl+C to stop and return to the dashboard.${RESET}\n"
-
-    install_deps "$tool_dir"
-    sudo python3 "$cli_path" || echo -e "\n${RED}The tool exited with an error.${RESET}"
     pause
 }
 
@@ -113,9 +125,19 @@ tool_handler() {
     local repo_url="$1"
     local repo_name="$(basename "$repo_url" .git)"
 
-    # Ensure we operate inside MODULES_DIR
-    mkdir -p "$MODULES_DIR"
-    cd "$MODULES_DIR"
+    # Use the globally defined MODULES_DIR (from nemesis.sh)
+    if ! mkdir -p "$MODULES_DIR" 2>/dev/null; then
+        echo -e "${RED}ERROR: Cannot create modules directory at ${MODULES_DIR}${RESET}"
+        echo -e "${YELLOW}Please ensure the script is run from a writable location.${RESET}"
+        pause
+        return 1
+    fi
+
+    if ! cd "$MODULES_DIR"; then
+        echo -e "${RED}ERROR: Cannot enter ${MODULES_DIR}${RESET}"
+        pause
+        return 1
+    fi
 
     while true; do
         clear_screen
@@ -144,6 +166,7 @@ tool_handler() {
                             [[ "${run_ans,,}" =~ ^(y|yes)$ ]] && run_tool "$repo_name"
                         else
                             echo -e "${RED}Clone failed.${RESET}"
+                            pause
                         fi
                     else
                         echo -e "${MUTED}Reclone cancelled.${RESET}"
@@ -162,6 +185,7 @@ tool_handler() {
                 [[ "${run_ans,,}" =~ ^(y|yes)$ ]] && run_tool "$repo_name"
             else
                 echo -e "${RED}Clone failed.${RESET}"
+                pause
             fi
             cd - >/dev/null
             break

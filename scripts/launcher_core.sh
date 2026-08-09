@@ -2,6 +2,8 @@
 # scripts/launcher_core.sh – Install / Remove logic
 set -euo pipefail
 
+LAUNCHER_PATH="/usr/local/bin/nemesis"
+
 launcher_install() {
     clear_screen
     logo

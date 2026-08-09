@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ----------------------------------------------------------------------
-# Project Nemesis – Dashboard (modular edition)
+# Project Nemesis – Dashboard (modular)
 # ----------------------------------------------------------------------
 set -euo pipefail
 
 VERSION="0.2.0"
 
-# ---- real path of this script (works through symlinks) ----
+# Resolve real path
 if command -v realpath &>/dev/null; then
     SCRIPT_REALPATH="$(realpath "$0")"
 elif command -v readlink &>/dev/null; then
@@ -16,24 +16,23 @@ else
 fi
 SCRIPT_DIR="$(dirname "$SCRIPT_REALPATH")"
 
-# ---- source shared helpers ----
-if [[ -f "$SCRIPT_DIR/utils/helpers.sh" ]]; then
-    source "$SCRIPT_DIR/utils/helpers.sh"
-else
-    echo "ERROR: utils/helpers.sh not found." >&2
-    exit 1
-fi
-
-# ---- set modules directory for tool_handler ----
+# Set modules directory (relative to script) & export for helpers
 MODULES_DIR="$SCRIPT_DIR/modules"
+export SCRIPT_DIR MODULES_DIR
 
-# ---- source sub-menus ----
+# Source shared helpers (must be first)
+source "$SCRIPT_DIR/utils/helpers.sh"
+
+# Source sub-menus
 source "$SCRIPT_DIR/scripts/launcher_core.sh"
 source "$SCRIPT_DIR/scripts/launcher_update.sh"
 source "$SCRIPT_DIR/scripts/general.sh"
 source "$SCRIPT_DIR/scripts/cve.sh"
 source "$SCRIPT_DIR/scripts/about.sh"
-# ---- main dashboard ----
+
+# ----------------------------------------------------------------------
+# Main Dashboard
+# ----------------------------------------------------------------------
 main() {
     case "${1:-}" in
         --version) echo "Project Nemesis v$VERSION"; exit 0 ;;

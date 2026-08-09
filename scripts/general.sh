@@ -9,12 +9,12 @@ general_attack_menu() {
         banner "General Attacks"
         echo -e "${YELLOW}
   [1] Scanner
-  [2] DHCP
-  [3] DoS
+  [2] DHCP Havoc
+  [3] DoS Engine
   [4] Sniffer
   [5] AD Reaper
   [6] SMB Phantom
-  [7] DNS
+  [7] DNS Hydra
   [8] RCP (Empty)
   [0] Back to main menu
 ${RESET}"
@@ -27,7 +27,7 @@ ${RESET}"
             5) tool_handler "https://github.com/ErfanNahidi/Nemesis-AD-Reaper" ;;
             6) tool_handler "https://github.com/ErfanNahidi/Nemesis-SMB-Phantom" ;;
             7) tool_handler "https://github.com/ErfanNahidi/Nemesis-DNS-Hydra" ;;
-            8) tool_handler "" ;;   # RCP placeholder
+            8) tool_handler "" ;;  # RCP placeholder
             0) break ;;
             *) echo -e "${RED}Please select a listed option.${RESET}" && sleep 1 ;;
         esac
