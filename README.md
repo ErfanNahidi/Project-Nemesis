@@ -1,17 +1,6 @@
 <p align="center">
   <img src="Logo.png" width="300" alt="Nemesis Scanner Logo">
 
-  <h1 align="center">Nemesis Scanner</h1>
-
-  <p align="center">
-    Advanced Network Reconnaissance & Vulnerability Scanner
-  </p>
-</p>
-
----
-
-[🇮🇷 فارسی](README_FA.md)
-
 
 <p align="center">
   <h1 align="center">Project Nemesis</h1>
@@ -19,6 +8,7 @@
 </p>
 
 ---
+[🇮🇷 فارسی](README_FA.md)
 
 ## ⚡ Overview
 
