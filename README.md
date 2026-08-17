@@ -1,166 +1,576 @@
-<p align="center">
-  <img src="Logo.png" width="300" alt="Nemesis Scanner Logo">
-
+# ⚔️ Project Nemesis
 
 <p align="center">
-  <h1 align="center">Project Nemesis</h1>
-  <p align="center"><em>Windows Services Security Pentest Framework</em></p>
+  <img src="Logo.png" width="300" alt="Project Nemesis Logo">
+</p>
+
+<h1 align="center">Project Nemesis</h1>
+
+<p align="center">
+  <strong>Windows Services Security Pentest Framework</strong>
+</p>
+
+<p align="center">
+  A modular command-line platform for network reconnaissance, protocol analysis,<br>
+  security testing, and authorized offensive security research.
+</p>
+
+<p align="center">
+  <a href="README_FA.md">🇮🇷 فارسی</a>
 </p>
 
 ---
-[🇮🇷 فارسی](README_FA.md)
 
 ## ⚡ Overview
 
-**Project Nemesis** is a modular, educational pentesting dashboard focused on **Windows Services security**.  
-It provides a unified command‑line interface to discover, clone, update, and run a collection of offensive security tools – each targeting a specific protocol or attack vector.
+**Project Nemesis** is a modular security testing framework designed to bring multiple Windows and network security tools together under a single command-line interface.
 
-All tools are designed for **isolated lab environments** and are intended for **authorised security training** only.
+Instead of managing every security utility independently, Nemesis provides a centralized dashboard for discovering, installing, updating, and launching specialized security modules.
 
----
+The framework is focused on **Windows Services, network protocols, infrastructure security, and penetration testing workflows**, with individual modules targeting specific protocols, services, and attack surfaces.
 
-## 🧩 Features
-
-- 🖥️ **Interactive Dashboard** – clean terminal UI with colourised menus
-- 🧰 **Modular Toolset** – scanner, DHCP havoc, DoS, sniffer, AD/SMB/DNS attacks
-- 📦 **One‑Click Cloning** – automatically fetches each tool from its own GitHub repo
-- 🔄 **Easy Updates** – reclone any module to get the latest version
-- 🔗 **System‑wide Launcher** – optional `nemesis` command available anywhere
-- 🎓 **Educational Focus** – built for learning, not production use
+> **⚠️ Project Nemesis is intended for authorized security assessments, research, education, and isolated laboratory environments only.**
 
 ---
 
-## 🚀 Quick Start
+## 🧠 Design Philosophy
+
+Nemesis follows a simple principle:
+
+> **One framework. Multiple security tools. One consistent workflow.**
+
+Each tool operates as an independent module with its own repository, dependencies, and functionality. The main dashboard acts as an orchestration layer rather than tightly coupling the individual projects together.
+
+This makes the framework easier to:
+
+* Develop and maintain
+* Extend with new modules
+* Update individual tools independently
+* Test modules in isolated environments
+* Build custom security-testing workflows
+
+---
+
+## ✨ Core Features
+
+### 🖥️ Interactive Dashboard
+
+A terminal-based interface for accessing and managing all Nemesis modules from one place.
+
+### 🧩 Modular Architecture
+
+Each security utility is maintained as an independent project and loaded dynamically into the main framework.
+
+### 📦 Automatic Module Deployment
+
+Modules are automatically cloned from their GitHub repositories when they are required.
+
+### 🔄 Module Updates
+
+Existing modules can be recloned to retrieve the latest repository version.
+
+### 🚀 Global Launcher
+
+Nemesis can optionally install a system-wide `nemesis` command, allowing the framework to be launched from anywhere.
+
+### 🐍 Python Tool Integration
+
+Individual modules can use their own Python runtime and dependency requirements without introducing dependencies into the core dashboard.
+
+### 🎓 Research & Training Oriented
+
+The framework is designed primarily for:
+
+* Penetration testing laboratories
+* Security research
+* Red Team training
+* Network security education
+* Windows infrastructure testing
+* Protocol analysis
+
+---
+
+# 🧩 Modules
+
+Project Nemesis currently integrates the following projects.
+
+| Module                  | Repository                                                                  | Purpose                                                           |
+| ----------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 🔎 **Nemesis Scanner**  | [`Nemesis-Scanner`](https://github.com/ErfanNahidi/Nemesis-Scanner)         | Network reconnaissance, service discovery & vulnerability mapping |
+| ☠️ **DHCP Havoc**       | [`Nemesis-DHCP-Havoc`](https://github.com/ErfanNahidi/Nemesis-DHCP-Havoc)   | DHCP security testing and exhaustion attacks                      |
+| 💀 **DoS Engine**       | [`Nemesis-DoS-Engine`](https://github.com/ErfanNahidi/Nemesis-DoS-Engine)   | Denial-of-Service testing for controlled environments             |
+| 🕵️ **Nemesis Sniffer** | [`Nemesis-Sniffiner`](https://github.com/ErfanNahidi/Nemesis-Sniffiner)     | Packet capture and network traffic analysis                       |
+| ☠️ **AD Reaper**        | [`Nemesis-AD-Reaper`](https://github.com/ErfanNahidi/Nemesis-AD-Reaper)     | Active Directory reconnaissance and security testing              |
+| 👻 **SMB Phantom**      | [`Nemesis-SMB-Phantom`](https://github.com/ErfanNahidi/Nemesis-SMB-Phantom) | SMB enumeration and security testing                              |
+| 🐉 **DNS Hydra**        | [`Nemesis-DNS-Hydra`](https://github.com/ErfanNahidi/Nemesis-DNS-Hydra)     | DNS security testing, spoofing and poisoning research             |
+| ⚙️ **RPC**              | —                                                                           | Reserved for future RPC-focused tooling                           |
+
+> **Note:** Modules marked as future or development components may not yet be available in the main framework.
+
+---
+
+# 🏗️ Architecture
+
+```text
+                         ┌──────────────────────────┐
+                         │      Project Nemesis     │
+                         │     Main CLI Dashboard   │
+                         └────────────┬─────────────┘
+                                      │
+                ┌─────────────────────┼─────────────────────┐
+                │                     │                     │
+                ▼                     ▼                     ▼
+        ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+        │   Launcher   │      │ General      │      │     CVE      │
+        │   Manager    │      │   Attacks    │      │   Exploits   │
+        └──────┬───────┘      └──────┬───────┘      └──────────────┘
+               │                     │
+               │                     ├── Scanner
+               │                     ├── DHCP Havoc
+               │                     ├── DoS Engine
+               │                     ├── Sniffer
+               │                     ├── AD Reaper
+               │                     ├── SMB Phantom
+               │                     └── DNS Hydra
+               │
+               ▼
+        ┌─────────────────────────────────────────┐
+        │                  modules/                │
+        │                                         │
+        │  ├── Nemesis-Scanner                    │
+        │  ├── Nemesis-DHCP-Havoc                 │
+        │  ├── Nemesis-DoS-Engine                 │
+        │  ├── Nemesis-Sniffiner                  │
+        │  ├── Nemesis-AD-Reaper                  │
+        │  ├── Nemesis-SMB-Phantom                │
+        │  └── Nemesis-DNS-Hydra                  │
+        └─────────────────────────────────────────┘
+```
+
+The framework itself contains the orchestration logic, while individual security capabilities remain isolated inside their respective repositories.
+
+---
+
+# 📂 Project Structure
+
+```text
+Project-Nemesis/
+│
+├── nemesis.sh
+│
+├── utils/
+│   └── helpers.sh
+│
+├── scripts/
+│   ├── general.sh
+│   ├── cve.sh
+│   ├── launcher.sh
+│   └── about.sh
+│
+├── modules/
+│   ├── Nemesis-Scanner/
+│   ├── Nemesis-DHCP-Havoc/
+│   ├── Nemesis-DoS-Engine/
+│   ├── Nemesis-Sniffiner/
+│   ├── Nemesis-AD-Reaper/
+│   ├── Nemesis-SMB-Phantom/
+│   └── Nemesis-DNS-Hydra/
+│
+├── Logo.png
+├── README.md
+├── README_FA.md
+└── LICENSE
+```
+
+### Component Responsibilities
+
+| Component             | Responsibility                                        |
+| --------------------- | ----------------------------------------------------- |
+| `nemesis.sh`          | Main framework entry point                            |
+| `utils/helpers.sh`    | Shared UI and framework helper functions              |
+| `scripts/general.sh`  | Security tool selection and execution                 |
+| `scripts/cve.sh`      | CVE / exploit functionality                           |
+| `scripts/launcher.sh` | Installation, update, removal and launcher management |
+| `scripts/about.sh`    | Project information                                   |
+| `modules/`            | Automatically cloned security tools                   |
+
+---
+
+# 🚀 Installation
+
+## Requirements
+
+The framework itself has minimal dependencies:
+
+* **Bash ≥ 4.0**
+* **Git**
+* **Python 3**
+* **pip3**
+* **sudo access**
+
+Individual modules may require additional packages depending on their implementation.
+
+---
+
+## Clone Project Nemesis
 
 ```bash
-# Clone the dashboard
 git clone https://github.com/ErfanNahidi/Project-Nemesis.git
 cd Project-Nemesis
+```
 
-# Make it executable
+Make the launcher executable:
+
+```bash
 chmod +x nemesis.sh
+```
 
-# Run
+Run the framework:
+
+```bash
 ./nemesis.sh
 ```
 
-> 💡 **Tip:** Use the built‑in launcher to install a global `nemesis` command.
-
 ---
 
-## 📂 Project Structure
+# 🕹️ Main Menu
 
-```
-Project-Nemesis/
-├── nemesis.sh              # Main entry point
-├── utils/
-│   └── helpers.sh          # Shared functions (UI, tool handler)
-├── scripts/
-│   ├── general.sh          # General Attacks menu
-│   ├── cve.sh              # CVE Exploits (placeholder)
-│   ├── launcher.sh         # Install / remove / update
-│   └── about.sh            # Author & project info
-├── modules/                # Cloned tools land here automatically
-├── LICENSE
-└── README.md
-```
+The main dashboard provides access to the framework's core functions.
 
----
-
-## 🕹️ Main Menu
-
-```
-  [1] Nemesis Launcher (install/update/remove)
-  [2] General Attacks
-  [3] CVE Exploits
-  [4] About
-  [0] Exit
+```text
+┌──────────────────────────────────────────┐
+│              PROJECT NEMESIS             │
+├──────────────────────────────────────────┤
+│                                          │
+│  [1] Nemesis Launcher                    │
+│  [2] General Attacks                     │
+│  [3] CVE Exploits                        │
+│  [4] About                               │
+│  [0] Exit                                │
+│                                          │
+└──────────────────────────────────────────┘
 ```
 
-### General Attacks Sub‑menu
+### General Attacks
 
-```
-  [1] Scanner          – network reconnaissance & CVE mapping
-  [2] DHCP Havoc       – DHCP exhaustion / rogue server
-  [3] DoS              – Denial‑of‑Service testing
-  [4] Sniffer          – packet capture & analysis
-  [5] AD Reaper        – Active Directory enumeration (coming soon)
-  [6] SMB Phantom      – SMB share enumeration / exploit (coming soon)
-  [7] DNS              – DNS spoofing / cache poisoning
-  [8] RCP              – (reserved for future RPC attacks)
+```text
+[1] Scanner
+[2] DHCP Havoc
+[3] DoS Engine
+[4] Sniffer
+[5] AD Reaper
+[6] SMB Phantom
+[7] DNS Hydra
+[8] RPC
+[0] Back
 ```
 
 ---
 
-## 🔧 Module Workflow
+# 🔧 Module Workflow
 
-1. **Select a tool** from the menu.  
-2. If not cloned yet → automatically downloads from GitHub into `modules/`.  
-3. The tool’s Python dependencies are installed automatically.  
-4. You can **run** the tool or **reclone** it later to get updates.
+Nemesis is designed around a simple module lifecycle.
 
-All tools are launched with:
+### 1. Select a module
+
+Choose a security tool from the **General Attacks** menu.
+
+### 2. Automatic cloning
+
+If the selected module is not present locally, Nemesis clones its repository into:
+
+```text
+modules/
+```
+
+### 3. Dependency installation
+
+The framework can prepare the Python dependencies required by the selected module.
+
+### 4. Module execution
+
+The selected tool is launched through the framework.
+
+### 5. Updating
+
+Existing modules can be recloned through the launcher to obtain the latest repository version.
+
+---
+
+# 📦 Launcher
+
+The **Nemesis Launcher** provides management functionality for the framework and its components.
+
+Typical operations include:
+
+```text
+[1] Install Launcher
+[2] Remove Launcher
+[3] Update Project
+[4] Manage Modules
+[0] Back
+```
+
+Once installed, the framework can be started globally:
 
 ```bash
-sudo python3 <module>/cli.py
+nemesis
 ```
 
----
-
-## 📦 Dependencies
-
-- **bash** ≥ 4.0
-- **git**
-- **python3** & **pip3** (for individual tools)
-- **sudo** access (network tools require root)
-
-The dashboard itself has **no external dependencies**.
+This avoids having to manually navigate to the project directory every time.
 
 ---
 
-## 🧪 Included Modules
+# 🔄 Updating
 
-| Module          | Repository                                        | Description                          |
-|-----------------|---------------------------------------------------|--------------------------------------|
-| Scanner         | `ErfanNahidi/Nemesis-Scanner`                     | Network recon & vuln mapping         |
-| DHCP Havoc      | `ErfanNahidi/Nemesis-DHCP-Havoc`                  | DHCP exhaustion attacks              |
-| DoS Engine      | `ErfanNahidi/Nemesis-DoS-Engine`                  | DoS testing (lab only)               |
-| Sniffer         | `ErfanNahidi/Nemesis-Sniffiner`                   | Packet capture & analysis            |
-| AD Reaper       | `ErfanNahidi/Nemesis-AD-Reaper`                   | AD enumeration (to be released)      |
-| SMB Phantom     | `ErfanNahidi/Nemesis-SMB-Phantom`                 | SMB exploitation (to be released)    |
-| DNS Hydra       | `ErfanNahidi/Nemesis-DNS-Hydra`                   | DNS spoofing / poisoning             |
-| RCP             | –                                                 | Future RPC attacks                   |
+## Update Project Nemesis
 
----
+From the framework:
 
-## 🔄 Updating the Dashboard
+```text
+Nemesis Launcher
+        ↓
+      Update
+```
 
-Use the built‑in launcher:
+Or manually:
 
-1. From the main menu, go to **[1] Nemesis Launcher**.  
-2. Select **[3] Update** – pulls the latest dashboard code from GitHub.
-
-Or manually:  
 ```bash
 git pull origin main
 ```
 
----
+## Update a Module
 
-## ⚠️ Legal & Ethical Disclaimer
+Modules can be recloned through the launcher to synchronize them with their upstream repositories.
 
-This project is provided for **educational and authorised testing purposes only**.  
-**Do not use these tools against any system you do not own or have explicit permission to test.**
-
-The author assumes **no liability** for any misuse or damage caused by this software.
+> **Important:** Module repositories are maintained independently from the main Project Nemesis repository.
 
 ---
 
-## 📜 License
+# 🔐 Security Model
 
-MIT License – see [LICENSE](LICENSE) for details.
+Project Nemesis intentionally separates the **framework layer** from the **security-tool layer**.
+
+```text
+Framework
+   │
+   ├── UI / Menu
+   ├── Module discovery
+   ├── Repository management
+   ├── Dependency handling
+   └── Execution
+          │
+          ▼
+     Security Modules
+```
+
+This architecture allows new tools to be added without significantly modifying the core framework.
+
+A future module can follow the same model:
+
+```text
+New Repository
+      ↓
+Module Definition
+      ↓
+Automatic Clone
+      ↓
+Dependency Setup
+      ↓
+Framework Integration
+```
 
 ---
 
-*Stay curious. Stay authorised.*  
-— Erfan Nahidi
+# 🧪 Security Testing Scope
+
+Project Nemesis is intended to support controlled testing involving areas such as:
+
+### Network Security
+
+* Network reconnaissance
+* Service discovery
+* Traffic analysis
+* Vulnerability identification
+* Protocol security research
+
+### Windows Services
+
+* DHCP
+* DNS
+* SMB
+* RPC
+* Active Directory
+* Windows network services
+
+### Offensive Security Research
+
+* Protocol abuse research
+* Misconfiguration testing
+* Security-control validation
+* Red Team laboratory exercises
+* Attack simulation in isolated environments
+
+---
+
+# 🗺️ Roadmap
+
+The framework is designed to grow into a broader modular Windows and network security platform.
+
+### Current Direction
+
+* [x] Centralized CLI dashboard
+* [x] Modular tool loading
+* [x] Git-based module deployment
+* [x] Module update workflow
+* [x] Global launcher
+* [x] Network reconnaissance tooling
+* [x] DHCP security tooling
+* [x] Packet analysis tooling
+* [x] DNS security tooling
+
+### Planned
+
+* [ ] Improved module discovery
+* [ ] Better dependency management
+* [ ] Module version tracking
+* [ ] Module health/status detection
+* [ ] Unified configuration system
+* [ ] Better logging and error reporting
+* [ ] CVE module integration
+* [ ] RPC security module
+* [ ] Expanded Active Directory tooling
+* [ ] Expanded SMB security tooling
+* [ ] Framework-wide configuration profiles
+
+---
+
+# 🛠️ Troubleshooting
+
+### Permission denied
+
+Make sure the main script is executable:
+
+```bash
+chmod +x nemesis.sh
+```
+
+### Git is unavailable
+
+Install Git through your distribution's package manager.
+
+### Python module dependency errors
+
+Individual modules may require additional Python packages. Check the README of the affected module for module-specific requirements.
+
+### Network tools fail without privileges
+
+Some operations require elevated privileges:
+
+```bash
+sudo ./nemesis.sh
+```
+
+However, privilege requirements depend on the specific module being executed.
+
+---
+
+# 🤝 Contributing
+
+Contributions are welcome.
+
+You can contribute by:
+
+* Creating new security modules
+* Improving the framework architecture
+* Fixing bugs
+* Improving documentation
+* Adding protocol support
+* Improving the CLI experience
+* Testing modules in controlled environments
+
+For a new module, the recommended approach is to keep it as an **independent repository** and integrate it into Nemesis through the existing module architecture.
+
+---
+
+# ⚠️ Legal & Ethical Disclaimer
+
+Project Nemesis is developed for **authorized security testing, education, research, and controlled laboratory environments**.
+
+You are responsible for ensuring that you have explicit permission to test any system, network, host, service, or infrastructure targeted by these tools.
+
+Do **not** use Project Nemesis against systems that you do not own or have explicit authorization to assess.
+
+The author and contributors are not responsible for:
+
+* Unauthorized use
+* Service disruption
+* Data loss
+* Infrastructure damage
+* Security incidents
+* Any other consequences resulting from misuse
+
+> **Use responsibly. Test only systems you are authorized to test.**
+
+---
+
+# 📜 License
+
+Project Nemesis is released under the **MIT License**.
+
+See [`LICENSE`](LICENSE) for the complete license text.
+
+---
+
+# 🔗 Project Links
+
+### Main Framework
+
+**Project Nemesis**
+https://github.com/ErfanNahidi/Project-Nemesis
+
+### Modules
+
+* **Nemesis Scanner**
+  https://github.com/ErfanNahidi/Nemesis-Scanner
+
+* **Nemesis DHCP Havoc**
+  https://github.com/ErfanNahidi/Nemesis-DHCP-Havoc
+
+* **Nemesis DoS Engine**
+  https://github.com/ErfanNahidi/Nemesis-DoS-Engine
+
+* **Nemesis Sniffer**
+  https://github.com/ErfanNahidi/Nemesis-Sniffiner
+
+* **Nemesis AD Reaper**
+  https://github.com/ErfanNahidi/Nemesis-AD-Reaper
+
+* **Nemesis SMB Phantom**
+  https://github.com/ErfanNahidi/Nemesis-SMB-Phantom
+
+* **Nemesis DNS Hydra**
+  https://github.com/ErfanNahidi/Nemesis-DNS-Hydra
+
+---
+
+# 👤 Author
+
+**Erfan Nahidi**
+
+Security Researcher • Infrastructure & Network Engineer
+
+GitHub:
+https://github.com/ErfanNahidi
+
+---
+
+<div align="center">
+
+### ⚔️ Project Nemesis
+
+**Modular. Offensive. Educational.**
+
+*Stay curious. Stay authorised.*
+
+</div>
